@@ -8,6 +8,13 @@ __v0_jsx-dev-runtime.ts
 
 # Environment variables
 .env*.local
+.env
+
+# Python ignores
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
 
 # Common ignores
 node_modules

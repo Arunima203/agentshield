@@ -1,0 +1,114 @@
+# AgentShield Configuration
+# All rules are applied in order; first match wins.
+
+version: "1"
+
+# ─── Risk Thresholds ───────────────────────────────────────────────────────────
+risk:
+  # Score 0–100. Actions scoring >= block_threshold are blocked outright.
+  block_threshold: 80
+  # Actions scoring >= review_threshold require human approval.
+  review_threshold: 50
+  # Actions scoring below review_threshold are auto-approved.
+
+# ─── Tool Rules ────────────────────────────────────────────────────────────────
+tools:
+  # Each entry matches a tool by name (supports glob patterns).
+  - name: "fs_write"
+    risk_score: 40
+    description: "Writing files is medium risk"
+
+  - name: "str_replace"
+    risk_score: 35
+    description: "Replacing content in files"
+
+  - name: "delete_file"
+    risk_score: 85
+    description: "File deletion is high risk — require approval"
+    require_approval: true
+
+  - name: "execute_pwsh"
+    risk_score: 90
+    description: "Shell command execution is very high risk"
+    require_approval: true
+
+  - name: "execute_bash"
+    risk_score: 90
+    description: "Shell command execution is very high risk"
+    require_approval: true
+
+  - name: "web_fetch"
+    risk_score: 55
+    description: "Fetching external URLs"
+    require_approval: false
+
+  - name: "remote_web_search"
+    risk_score: 20
+    description: "Read-only web search"
+
+  - name: "read_file"
+    risk_score: 10
+    description: "Reading files is low risk"
+
+  - name: "*"
+    risk_score: 30
+    description: "Default rule for unmatched tools"
+
+# ─── Secrets Protection ────────────────────────────────────────────────────────
+secrets:
+  enabled: true
+  # Patterns are matched against tool call arguments (as serialized JSON).
+  # Matching args are redacted in logs and blocked from external calls.
+  patterns:
+    - name: "AWS Access Key"
+      regex: "AKIA[0-9A-Z]{16}"
+    - name: "AWS Secret Key"
+      regex: "(?i)aws.{0,20}secret.{0,20}['\"][0-9a-zA-Z/+]{40}['\"]"
+    - name: "Generic API Key"
+      regex: "(?i)(api[_-]?key|apikey)['\"]?\\s*[:=]\\s*['\"]?[0-9a-zA-Z\\-_]{20,}"
+    - name: "Private Key Block"
+      regex: "-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----"
+    - name: "JWT Token"
+      regex: "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+    - name: "GitHub Token"
+      regex: "ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82}"
+    - name: "Slack Token"
+      regex: "xox[baprs]-[0-9A-Za-z\\-]+"
+    - name: "Password Field"
+      regex: "(?i)(password|passwd|pwd)['\"]?\\s*[:=]\\s*['\"][^'\"]{6,}"
+    - name: "Connection String"
+      regex: "(?i)(mongodb|postgres|mysql|redis):\\/\\/[^\\s]+"
+
+# ─── Blocked Patterns ─────────────────────────────────────────────────────────
+# These regex patterns in tool arguments trigger an immediate BLOCK.
+blocked_patterns:
+  - name: "Recursive delete"
+    regex: "rm\\s+-rf|Remove-Item\\s+-Recurse\\s+-Force"
+    reason: "Recursive force delete is not allowed"
+
+  - name: "Fork bomb"
+    regex: ":\\(\\)\\s*\\{\\s*:\\|:&"
+    reason: "Fork bomb pattern detected"
+
+  - name: "sudo escalation"
+    regex: "\\bsudo\\b"
+    reason: "Privilege escalation via sudo is blocked"
+
+  - name: "curl pipe to shell"
+    regex: "curl.+\\|.*(bash|sh|zsh|powershell)"
+    reason: "Downloading and executing remote scripts is not allowed"
+
+# ─── Allowed Domains (for web tools) ──────────────────────────────────────────
+allowed_domains:
+  enabled: false   # set to true to enforce allowlist
+  list:
+    - "github.com"
+    - "npmjs.com"
+    - "docs.python.org"
+    - "developer.mozilla.org"
+
+# ─── Audit ────────────────────────────────────────────────────────────────────
+audit:
+  enabled: true
+  # Keep records for N days (0 = keep forever)
+  retention_days: 90

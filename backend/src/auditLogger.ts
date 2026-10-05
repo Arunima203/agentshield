@@ -18,7 +18,11 @@ let _sql: SqlJsStatic | null = null;
 let _db: Database | null = null;
 
 function getDbPath(): string {
-  return path.resolve(process.env.DB_PATH ?? "./data/agentshield.db");
+  // On Railway/cloud, use /tmp (writable). Locally use ./data/
+  const defaultPath = process.env.RAILWAY_ENVIRONMENT
+    ? "/tmp/agentshield.db"
+    : "./data/agentshield.db";
+  return path.resolve(process.env.DB_PATH ?? defaultPath);
 }
 
 async function initSql(): Promise<SqlJsStatic> {

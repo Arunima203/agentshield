@@ -1,8 +1,11 @@
 {
-  "name": "agentshield",
+  "name": "agentshield-backend",
   "version": "1.0.0",
   "description": "A local-first security layer for AI agents — inspect tool calls, detect risky actions, protect secrets, require human approval.",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",

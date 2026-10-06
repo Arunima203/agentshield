@@ -60,9 +60,9 @@ secrets:
   # Patterns are matched against tool call arguments (as serialized JSON).
   # Matching args are redacted in logs and blocked from external calls.
   patterns:
-    - name: "AWS Access Key"
+    - name: "aws Access Key"
       regex: "AKIA[0-9A-Z]{16}"
-    - name: "AWS Secret Key"
+    - name: "aws Secret Key"
       regex: "(?i)aws.{0,20}secret.{0,20}['\"][0-9a-zA-Z/+]{40}['\"]"
     - name: "Generic API Key"
       regex: "(?i)(api[_-]?key|apikey)['\"]?\\s*[:=]\\s*['\"]?[0-9a-zA-Z\\-_]{20,}"
@@ -78,13 +78,14 @@ secrets:
       regex: "(?i)(password|passwd|pwd)['\"]?\\s*[:=]\\s*['\"][^'\"]{6,}"
     - name: "Connection String"
       regex: "(?i)(mongodb|postgres|mysql|redis):\\/\\/[^\\s]+"
+      flags: "i"
+
+
 
 # ─── Blocked Patterns ─────────────────────────────────────────────────────────
 # These regex patterns in tool arguments trigger an immediate BLOCK.
 blocked_patterns:
-  - name: "Recursive delete"
-    regex: "rm\\s+-rf|Remove-Item\\s+-Recurse\\s+-Force"
-    reason: "Recursive force delete is not allowed"
+  - name: "Recursive delete variants"`n    regex: "rm\s+(-[rf]+|--recursive|--force|--r|--f|(-r\s+-f)|(-f\s+-r))|Remove-Item\s+(-Recurse|-Force|(-Recurse\s+-Force)|(-Force\s+-Recurse))"`n    reason: "Recursive force delete is not allowed"
 
   - name: "Fork bomb"
     regex: ":\\(\\)\\s*\\{\\s*:\\|:&"
@@ -94,9 +95,17 @@ blocked_patterns:
     regex: "\\bsudo\\b"
     reason: "Privilege escalation via sudo is blocked"
 
-  - name: "curl pipe to shell"
-    regex: "curl.+\\|.*(bash|sh|zsh|powershell)"
-    reason: "Downloading and executing remote scripts is not allowed"
+    - name: "sudo and su escalation"
+    regex: "\b(sudo|su\s+-|doas)\b"
+    reason: "Privilege escalation (sudo, su -, doas) is blocked"
+
+  - name: "Encoded to shell"
+    regex: "(base64|xxd|od).+\|.*(bash|sh|zsh|powershell)"
+    reason: "Base64/encoding to shell execution is blocked"
+
+  - name: "Data exfiltration"
+    regex: "(cat|grep|head|tail|aws\s+s3).+\|.*(curl|wget|nc|socat)"
+    reason: "Piping sensitive data to external commands is blocked"
 
 # ─── Allowed Domains (for web tools) ──────────────────────────────────────────
 allowed_domains:
@@ -112,3 +121,4 @@ audit:
   enabled: true
   # Keep records for N days (0 = keep forever)
   retention_days: 90
+

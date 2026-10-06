@@ -2,7 +2,7 @@
  * interceptor.ts
  *
  * The core AgentShield pipeline:
- *   ToolCall → Risk Assessment → Secrets Scan → Decision → Approval Gate → Audit
+ *   ToolCall → Secrets Scan → Deterministic Risk Assessment → LLM Semantic Analysis → Combined Score → Decision → Approval Gate → Audit
  */
 
 import { v4 as uuidv4 } from "uuid";
@@ -12,6 +12,7 @@ import { scanAndRedact } from "./secretsScanner";
 import { createApprovalRequest, autoApprove, autoBlock } from "./approvalGate";
 import { writeAuditEntry } from "./auditLogger";
 import { logger } from "./logger";
+import { getLLMService, type LLMSecurityAnalysis } from "./llmService";
 import type {
   ToolCall,
   InspectionResult,
@@ -23,6 +24,35 @@ import type {
 } from "./types";
 
 const CTX = "Interceptor";
+
+// ─── Combine deterministic and LLM scores ────────────────────────────────────
+
+function combineScores(
+  deterministicScore: number,
+  llmAnalysis: LLMSecurityAnalysis,
+  config: any
+): { finalScore: number; sources: string[] } {
+  // If LLM is unavailable, use deterministic score
+  if (!llmAnalysis.llm_available || llmAnalysis.risk_score === null) {
+    return {
+      finalScore: deterministicScore,
+      sources: ["deterministic"],
+    };
+  }
+
+  // Weight: 60% deterministic, 40% LLM semantic
+  const llmWeight = 0.4;
+  const detWeight = 0.6;
+
+  const combinedScore = Math.round(
+    deterministicScore * detWeight + llmAnalysis.risk_score * llmWeight
+  );
+
+  return {
+    finalScore: Math.min(100, Math.max(0, combinedScore)),
+    sources: ["deterministic", "llm_semantic"],
+  };
+}
 
 // ─── Inspect a tool call ─────────────────────────────────────────────────────
 
@@ -45,10 +75,65 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
   // ── Step 1: Secrets scan ──────────────────────────────────────────────────
   const { sanitized: sanitizedArgs, findings: secretFindings } = scanAndRedact(toolCall.args);
 
-  // ── Step 2: Risk assessment ───────────────────────────────────────────────
+  // ── Step 2: Deterministic risk assessment ─────────────────────────────────
   const riskAssessment = assessRisk({ ...toolCall, args: sanitizedArgs as Record<string, unknown> });
 
-  // ── Step 3: Determine decision ────────────────────────────────────────────
+  // ── Step 3: LLM semantic analysis ──────────────────────────────────────────
+  let llmAnalysis: LLMSecurityAnalysis;
+  const enableLLM = process.env.ENABLE_LLM !== "false";
+
+  if (enableLLM) {
+    try {
+      const llmService = getLLMService();
+      llmAnalysis = await llmService.analyze({
+        tool: toolCall.tool,
+        arguments: sanitizedArgs as Record<string, any>,
+        agent_id: toolCall.agentId,
+        context: {
+          sessionId: toolCall.sessionId,
+          secretsDetected: secretFindings.length > 0,
+        },
+      });
+      logger.info(
+        CTX,
+        `LLM analysis for "${toolCall.tool}": score=${llmAnalysis.risk_score}, decision=${llmAnalysis.decision}`
+      );
+    } catch (error) {
+      logger.warn(CTX, `LLM analysis failed: ${error instanceof Error ? error.message : String(error)}`);
+      llmAnalysis = {
+        risk_score: null,
+        severity: "UNKNOWN",
+        decision: "REVIEW",
+        categories: [],
+        reason: "LLM analysis unavailable",
+        safe_alternative: null,
+        confidence: 0.0,
+        model: "unavailable",
+        llm_available: false,
+      };
+    }
+  } else {
+    llmAnalysis = {
+      risk_score: null,
+      severity: "UNKNOWN",
+      decision: "REVIEW",
+      categories: [],
+      reason: "LLM analysis disabled",
+      safe_alternative: null,
+      confidence: 0.0,
+      model: "disabled",
+      llm_available: false,
+    };
+  }
+
+  // ── Step 4: Combine scores ────────────────────────────────────────────────
+  const { finalScore, sources: scoreSources } = combineScores(
+    riskAssessment.riskScore,
+    llmAnalysis,
+    config
+  );
+
+  // ── Step 5: Determine decision ────────────────────────────────────────────
   let decision: Decision;
   let approvalStatus: ApprovalStatus;
 
@@ -64,12 +149,12 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     decision = "require_approval";
     approvalStatus = "pending";
   } else {
-    // Auto mode — use risk thresholds
-    if (riskAssessment.riskScore >= config.risk.block_threshold) {
+    // Auto mode — use combined risk score thresholds
+    if (finalScore >= config.risk.block_threshold) {
       decision = "block";
       approvalStatus = "auto_blocked";
     } else if (
-      riskAssessment.riskScore >= config.risk.review_threshold ||
+      finalScore >= config.risk.review_threshold ||
       riskAssessment.requireApproval
     ) {
       decision = "require_approval";
@@ -80,11 +165,11 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     }
   }
 
-  // ── Step 4: Build InspectionResult ───────────────────────────────────────
+  // ── Step 6: Build InspectionResult ───────────────────────────────────────
   const inspection: InspectionResult = {
     toolCallId: toolCall.id,
     tool: toolCall.tool,
-    riskScore: riskAssessment.riskScore,
+    riskScore: finalScore, // Combined score
     riskLevel: riskAssessment.riskLevel,
     decision,
     riskFindings: riskAssessment.findings,
@@ -92,9 +177,19 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     blockedPatternMatch: riskAssessment.blockedPattern?.name,
     sanitizedArgs: sanitizedArgs as Record<string, unknown>,
     inspectedAt: now,
+    llmAnalysis: llmAnalysis.llm_available ? {
+      score: llmAnalysis.risk_score,
+      severity: llmAnalysis.severity,
+      decision: llmAnalysis.decision,
+      categories: llmAnalysis.categories,
+      reason: llmAnalysis.reason,
+      confidence: llmAnalysis.confidence,
+      model: llmAnalysis.model,
+    } : undefined,
+    scoreSources: scoreSources,
   };
 
-  // ── Step 5: Approval request ──────────────────────────────────────────────
+  // ── Step 7: Approval request ──────────────────────────────────────────────
   let approvalRequestId: string | undefined;
 
   if (decision === "require_approval") {
@@ -111,14 +206,14 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     }
   }
 
-  // ── Step 6: Audit log ─────────────────────────────────────────────────────
+  // ── Step 8: Audit log ─────────────────────────────────────────────────────
   const auditEntry: AuditEntry = {
     id: uuidv4(),
     toolCallId: toolCall.id,
     tool: toolCall.tool,
     agentId: toolCall.agentId,
     sessionId: toolCall.sessionId,
-    riskScore: riskAssessment.riskScore,
+    riskScore: finalScore,
     riskLevel: riskAssessment.riskLevel,
     decision,
     approvalStatus,
@@ -132,33 +227,48 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
 
   await writeAuditEntry(auditEntry);
 
-  // ── Step 7: Response ──────────────────────────────────────────────────────
-  const message = buildMessage(decision, riskAssessment.riskScore, riskAssessment.blockedPattern?.reason);
+  // ── Step 9: Response ──────────────────────────────────────────────────────
+  const message = buildMessage(
+    decision,
+    finalScore,
+    riskAssessment.blockedPattern?.reason,
+    llmAnalysis
+  );
 
   logger.info(
     CTX,
-    `Decision for tool="${toolCall.tool}": ${decision.toUpperCase()} (score=${riskAssessment.riskScore})`
+    `Decision for tool="${toolCall.tool}": ${decision.toUpperCase()} (score=${finalScore}, sources=${scoreSources.join("+")})`
   );
 
   return {
     toolCallId: toolCall.id,
     decision,
-    riskScore: riskAssessment.riskScore,
+    riskScore: finalScore,
     riskLevel: riskAssessment.riskLevel,
     riskFindings: riskAssessment.findings,
     secretsDetected: secretFindings.length > 0,
     approvalRequestId,
     message,
+    llmAnalysis: llmAnalysis.llm_available ? llmAnalysis : undefined,
   };
 }
 
-function buildMessage(decision: Decision, score: number, blockReason?: string): string {
+function buildMessage(
+  decision: Decision,
+  score: number,
+  blockReason?: string,
+  llmAnalysis?: LLMSecurityAnalysis
+): string {
+  const llmNote = llmAnalysis?.llm_available
+    ? ` (semantic: ${llmAnalysis.risk_score}, deterministic: ${score})`
+    : "";
+
   switch (decision) {
     case "allow":
-      return `Tool call approved automatically (risk score: ${score})`;
+      return `Tool call approved automatically (risk score: ${score}${llmNote})`;
     case "block":
-      return `Tool call blocked${blockReason ? `: ${blockReason}` : ` due to high risk (score: ${score})`}`;
+      return `Tool call blocked${blockReason ? `: ${blockReason}` : ` due to high risk (score: ${score}${llmNote})`}`;
     case "require_approval":
-      return `Tool call queued for human approval (risk score: ${score})`;
+      return `Tool call queued for human approval (risk score: ${score}${llmNote})`;
   }
 }

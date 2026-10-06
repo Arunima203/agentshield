@@ -51,6 +51,16 @@ export interface InspectionResult {
   blockedPatternMatch?: string;
   sanitizedArgs?: Record<string, unknown>;
   inspectedAt: string;
+  llmAnalysis?: {
+    score: number | null;
+    severity: string;
+    decision: string;
+    categories: string[];
+    reason: string;
+    confidence: number;
+    model: string;
+  };
+  scoreSources?: string[];
 }
 
 // ─── Approval ─────────────────────────────────────────────────────────────────
@@ -155,4 +165,14 @@ export interface InspectResponse {
   secretsDetected: boolean;
   approvalRequestId?: string;
   message: string;
+  llmAnalysis?: {
+    risk_score: number | null;
+    severity: string;
+    decision: string;
+    categories: string[];
+    reason: string;
+    confidence: number;
+    model: string;
+    llm_available: boolean;
+  };
 }

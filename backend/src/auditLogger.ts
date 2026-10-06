@@ -1,344 +1,263 @@
 /**
  * auditLogger.ts
  *
- * PostgreSQL-backed audit logging for all tool inspection decisions.
- * Replaces sql.js with production-grade PostgreSQL.
+ * SQLite-backed audit log using sql.js (pure JavaScript, no native build needed).
+ * The database is loaded from disk on first access and flushed after every write.
  */
 
-import { v4 as uuidv4 } from 'uuid';
-import { query, queryNone, queryOne, transaction } from './database';
-import { logger } from './logger';
-import type { AuditEntry, ApprovalStatus } from './types';
+import initSqlJs, { Database, SqlJsStatic } from "sql.js";
+import path from "path";
+import fs from "fs";
+import { logger } from "./logger";
+import { getConfig } from "./config";
+import type { AuditEntry } from "./types";
 
-const CTX = 'AuditLogger';
+const CTX = "AuditLogger";
 
-// ─── Write Operations ────────────────────────────────────────────────────────
+let _sql: SqlJsStatic | null = null;
+let _db: Database | null = null;
+
+function getDbPath(): string {
+  return path.resolve(process.env.DB_PATH ?? "./data/agentshield.db");
+}
+
+async function initSql(): Promise<SqlJsStatic> {
+  if (_sql) return _sql;
+  _sql = await initSqlJs();
+  return _sql;
+}
 
 /**
- * Write an audit entry to the database.
- * Includes tool call details, risk assessment, and decision made.
+ * Load or create the SQLite database, run migrations, return the instance.
  */
-export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
-  try {
-    const sql = `
-      INSERT INTO audit_log (
-        id, tool_call_id, tool, agent_id, session_id, 
-        risk_score, risk_level, decision, approval_status,
-        risk_findings, secret_findings, sanitized_args_snapshot, created_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-      )
-      ON CONFLICT (tool_call_id) DO NOTHING
-    `;
+export async function getDb(): Promise<Database> {
+  if (_db) return _db;
 
-    await queryNone(sql, [
+  const sql = await initSql();
+  const dbPath = getDbPath();
+  const dir = path.dirname(dbPath);
+
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  if (fs.existsSync(dbPath)) {
+    const fileBuffer = fs.readFileSync(dbPath);
+    _db = new sql.Database(fileBuffer);
+  } else {
+    _db = new sql.Database();
+  }
+
+  migrate(_db);
+  flush(_db);
+  logger.info(CTX, `SQLite database ready at ${dbPath}`);
+  return _db;
+}
+
+/** Persist the in-memory database back to disk. */
+function flush(db: Database): void {
+  const dbPath = getDbPath();
+  const data = db.export();
+  const buf = Buffer.from(data);
+  fs.writeFileSync(dbPath, buf);
+}
+
+// ─── Schema ───────────────────────────────────────────────────────────────────
+
+function migrate(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id                    TEXT PRIMARY KEY,
+      tool_call_id          TEXT NOT NULL,
+      tool                  TEXT NOT NULL,
+      agent_id              TEXT,
+      session_id            TEXT,
+      risk_score            INTEGER NOT NULL,
+      risk_level            TEXT NOT NULL,
+      decision              TEXT NOT NULL,
+      approval_status       TEXT NOT NULL,
+      risk_findings         TEXT NOT NULL,
+      secret_findings       TEXT NOT NULL,
+      sanitized_args        TEXT NOT NULL,
+      created_at            TEXT NOT NULL,
+      resolved_at           TEXT
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_audit_tool       ON audit_log(tool)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_audit_decision   ON audit_log(decision)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log(created_at)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_audit_agent_id   ON audit_log(agent_id)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS approval_requests (
+      id                TEXT PRIMARY KEY,
+      tool_call_id      TEXT NOT NULL,
+      tool_call_json    TEXT NOT NULL,
+      inspection_json   TEXT NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'pending',
+      created_at        TEXT NOT NULL,
+      resolved_at       TEXT,
+      resolved_by       TEXT,
+      rejection_reason  TEXT,
+      timeout_ms        INTEGER
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status)`);
+}
+
+// ─── Write ────────────────────────────────────────────────────────────────────
+
+export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
+  const config = getConfig();
+  if (!config.audit.enabled) return;
+
+  const db = await getDb();
+  db.run(
+    `INSERT INTO audit_log (
+       id, tool_call_id, tool, agent_id, session_id,
+       risk_score, risk_level, decision, approval_status,
+       risk_findings, secret_findings, sanitized_args,
+       created_at, resolved_at
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
       entry.id,
       entry.toolCallId,
       entry.tool,
-      entry.agentId || null,
-      entry.sessionId || null,
+      entry.agentId ?? null,
+      entry.sessionId ?? null,
       entry.riskScore,
       entry.riskLevel,
       entry.decision,
       entry.approvalStatus,
-      entry.riskFindings || null,
-      entry.secretFindings || null,
-      entry.sanitizedArgsSnapshot || null,
+      entry.riskFindings,
+      entry.secretFindings,
+      entry.sanitizedArgsSnapshot,
       entry.createdAt,
-    ]);
-
-    logger.debug(CTX, `Audit entry written: id=${entry.id} tool="${entry.tool}"`);
-  } catch (error) {
-    logger.error(CTX, `Failed to write audit entry: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
+      entry.resolvedAt ?? null,
+    ]
+  );
+  flush(db);
+  logger.debug(CTX, `Audit entry written for tool_call_id=${entry.toolCallId}`);
 }
 
-/**
- * Update approval status in audit log after approval decision
- */
+// ─── Update approval status ───────────────────────────────────────────────────
+
 export async function updateAuditApproval(
   toolCallId: string,
-  status: ApprovalStatus,
-  timestamp: string
+  approvalStatus: string,
+  resolvedAt: string
 ): Promise<void> {
-  try {
-    const sql = `
-      UPDATE audit_log 
-      SET approval_status = $1, updated_at = $2 
-      WHERE tool_call_id = $3
-    `;
-
-    await queryNone(sql, [status, timestamp, toolCallId]);
-    logger.debug(CTX, `Approval status updated: toolCallId=${toolCallId} status=${status}`);
-  } catch (error) {
-    logger.error(CTX, `Failed to update approval status: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
+  const db = await getDb();
+  db.run(
+    `UPDATE audit_log SET approval_status=?, resolved_at=? WHERE tool_call_id=?`,
+    [approvalStatus, resolvedAt, toolCallId]
+  );
+  flush(db);
 }
 
-// ─── Read Operations ────────────────────────────────────────────────────────
+// ─── Query ────────────────────────────────────────────────────────────────────
 
-/**
- * Get audit entries for a specific agent
- */
-export async function getAuditEntriesForAgent(
-  agentId: string,
-  limit = 100
-): Promise<any[]> {
-  try {
-    const sql = `
-      SELECT * FROM audit_log 
-      WHERE agent_id = $1 
-      ORDER BY created_at DESC 
-      LIMIT $2
-    `;
+export async function queryAuditLog(opts: {
+  limit?: number;
+  offset?: number;
+  tool?: string;
+  decision?: string;
+  agentId?: string;
+  since?: string;
+}): Promise<AuditEntry[]> {
+  const db = await getDb();
+  const conditions: string[] = [];
+  const params: (string | number | null)[] = [];
 
-    const results = await query(sql, [agentId, limit]);
-    return (results || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to get audit entries: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
+  if (opts.tool) { conditions.push("tool = ?"); params.push(opts.tool); }
+  if (opts.decision) { conditions.push("decision = ?"); params.push(opts.decision); }
+  if (opts.agentId) { conditions.push("agent_id = ?"); params.push(opts.agentId); }
+  if (opts.since) { conditions.push("created_at >= ?"); params.push(opts.since); }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+
+  params.push(limit, offset);
+
+  const stmt = db.prepare(
+    `SELECT * FROM audit_log ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+  );
+  stmt.bind(params);
+
+  const rows: AuditEntry[] = [];
+  while (stmt.step()) {
+    rows.push(rowToEntry(stmt.getAsObject() as Record<string, unknown>));
   }
+  stmt.free();
+  return rows;
 }
 
-/**
- * Query audit log - exported for routes/audit.ts compatibility
- */
-export async function queryAuditLog(
-  agentId?: string,
-  startTime?: string,
-  endTime?: string,
-  limit = 100
-): Promise<any[]> {
-  try {
-    let sql = 'SELECT * FROM audit_log WHERE 1=1';
-    const params: any[] = [];
-    let paramIndex = 1;
+export async function getAuditStats(): Promise<Record<string, unknown>> {
+  const db = await getDb();
 
-    if (agentId) {
-      sql += ` AND agent_id = $${paramIndex++}`;
-      params.push(agentId);
-    }
+  const totalStmt = db.prepare("SELECT COUNT(*) as c FROM audit_log");
+  totalStmt.step();
+  const total = (totalStmt.getAsObject() as { c: number }).c;
+  totalStmt.free();
 
-    if (startTime) {
-      sql += ` AND created_at >= $${paramIndex++}`;
-      params.push(startTime);
-    }
+  const byDecision = runQuery(db, "SELECT decision, COUNT(*) as count FROM audit_log GROUP BY decision");
+  const byLevel    = runQuery(db, "SELECT risk_level, COUNT(*) as count FROM audit_log GROUP BY risk_level");
 
-    if (endTime) {
-      sql += ` AND created_at <= $${paramIndex++}`;
-      params.push(endTime);
-    }
-
-    sql += ` ORDER BY created_at DESC LIMIT $${paramIndex}`;
-    params.push(limit);
-
-    const results = await query(sql, params);
-    return (results || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to query audit log: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
+  return { total, byDecision, byLevel };
 }
 
-/**
- * Get audit entries within a time range
- */
-export async function getAuditEntriesInRange(
-  startTime: string,
-  endTime: string,
-  limit = 1000
-): Promise<any[]> {
-  try {
-    const sql = `
-      SELECT * FROM audit_log 
-      WHERE created_at >= $1 AND created_at <= $2 
-      ORDER BY created_at DESC 
-      LIMIT $3
-    `;
+export async function pruneOldEntries(): Promise<number> {
+  const config = getConfig();
+  if (!config.audit.retention_days) return 0;
 
-    const results = await query(sql, [startTime, endTime, limit]);
-    return (results || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to get audit entries in range: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - config.audit.retention_days);
+
+  const db = await getDb();
+  // sql.js doesn't return changes count directly; count first
+  const countStmt = db.prepare("SELECT COUNT(*) as c FROM audit_log WHERE created_at < ?");
+  countStmt.bind([cutoff.toISOString()]);
+  countStmt.step();
+  const count = (countStmt.getAsObject() as { c: number }).c;
+  countStmt.free();
+
+  db.run("DELETE FROM audit_log WHERE created_at < ?", [cutoff.toISOString()]);
+  flush(db);
+
+  if (count > 0) {
+    logger.info(CTX, `Pruned ${count} audit entries older than ${config.audit.retention_days} days`);
   }
+  return count;
 }
 
-/**
- * Get statistics for a time period - exported for routes/audit.ts compatibility
- */
-export async function getAuditStats(startTime: string, endTime: string) {
-  try {
-    const sql = `
-      SELECT 
-        COUNT(*) as total_decisions,
-        SUM(CASE WHEN decision = 'allow' THEN 1 ELSE 0 END) as allowed,
-        SUM(CASE WHEN decision = 'require_approval' THEN 1 ELSE 0 END) as queued,
-        SUM(CASE WHEN decision = 'block' THEN 1 ELSE 0 END) as blocked,
-        AVG(risk_score) as avg_risk_score,
-        MAX(risk_score) as max_risk_score,
-        COUNT(DISTINCT agent_id) as unique_agents,
-        COUNT(DISTINCT tool) as unique_tools
-      FROM audit_log 
-      WHERE created_at >= $1 AND created_at <= $2
-    `;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-    return await queryOne(sql, [startTime, endTime]);
-  } catch (error) {
-    logger.error(CTX, `Failed to get audit statistics: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
+function runQuery(db: Database, sql: string): Record<string, unknown>[] {
+  const stmt = db.prepare(sql);
+  const rows: Record<string, unknown>[] = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject() as Record<string, unknown>);
   }
+  stmt.free();
+  return rows;
 }
 
-/**
- * Get entries by decision type
- */
-export async function getAuditByDecision(
-  decision: string,
-  limit = 100
-): Promise<any[]> {
-  try {
-    const sql = `
-      SELECT * FROM audit_log 
-      WHERE decision = $1 
-      ORDER BY created_at DESC 
-      LIMIT $2
-    `;
-
-    const results = await query(sql, [decision, limit]);
-    return (results || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to get audit entries by decision: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
-}
-
-/**
- * Get high-risk entries
- */
-export async function getHighRiskEntries(
-  threshold = 70,
-  limit = 100
-): Promise<any[]> {
-  try {
-    const sql = `
-      SELECT * FROM audit_log 
-      WHERE risk_score >= $1 
-      ORDER BY risk_score DESC, created_at DESC 
-      LIMIT $2
-    `;
-
-    const results = await query(sql, [threshold, limit]);
-    return (results || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to get high-risk entries: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
-}
-
-// ─── Retention & Cleanup ────────────────────────────────────────────────────
-
-/**
- * Delete audit entries older than retention period - exported for routes/audit.ts compatibility
- */
-export async function pruneOldEntries(retentionDays: number): Promise<number> {
-  try {
-    const sql = `
-      DELETE FROM audit_log 
-      WHERE created_at < NOW() - INTERVAL '${retentionDays} days'
-      RETURNING id
-    `;
-
-    const deleted = await query(sql);
-    const count = (deleted || []).length;
-    logger.info(CTX, `Purged ${count} audit entries older than ${retentionDays} days`);
-    return count;
-  } catch (error) {
-    logger.error(CTX, `Failed to purge old entries: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
-}
-
-/**
- * Export audit entries to file (for compliance/backup)
- */
-export async function exportAuditEntries(
-  startTime: string,
-  endTime: string
-): Promise<any[]> {
-  try {
-    const sql = `
-      SELECT * FROM audit_log 
-      WHERE created_at >= $1 AND created_at <= $2 
-      ORDER BY created_at ASC
-    `;
-
-    const entries = await query(sql, [startTime, endTime]);
-    logger.info(CTX, `Exported ${(entries || []).length} audit entries for period ${startTime} to ${endTime}`);
-    return (entries || []) as any[];
-  } catch (error) {
-    logger.error(CTX, `Failed to export audit entries: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
-}
-
-// ─── Batch Operations ────────────────────────────────────────────────────────
-
-/**
- * Write multiple audit entries in a single transaction for performance
- */
-export async function writeAuditEntriesBatch(entries: AuditEntry[]): Promise<void> {
-  try {
-    await transaction(async (t) => {
-      for (const entry of entries) {
-        const sql = `
-          INSERT INTO audit_log (
-            id, tool_call_id, tool, agent_id, session_id, 
-            risk_score, risk_level, decision, approval_status,
-            risk_findings, secret_findings, sanitized_args_snapshot, created_at
-          ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-          )
-          ON CONFLICT (tool_call_id) DO NOTHING
-        `;
-
-        await t.none(sql, [
-          entry.id,
-          entry.toolCallId,
-          entry.tool,
-          entry.agentId || null,
-          entry.sessionId || null,
-          entry.riskScore,
-          entry.riskLevel,
-          entry.decision,
-          entry.approvalStatus,
-          entry.riskFindings || null,
-          entry.secretFindings || null,
-          entry.sanitizedArgsSnapshot || null,
-          entry.createdAt,
-        ]);
-      }
-    });
-
-    logger.debug(CTX, `Batch write: ${entries.length} audit entries`);
-  } catch (error) {
-    logger.error(CTX, `Failed to batch write audit entries: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
-}
-
-// ─── Health Check ────────────────────────────────────────────────────────────
-
-/**
- * Verify audit log table exists and is accessible
- */
-export async function healthCheck(): Promise<boolean> {
-  try {
-    await queryOne('SELECT COUNT(*) FROM audit_log LIMIT 1');
-    return true;
-  } catch {
-    return false;
-  }
+function rowToEntry(row: Record<string, unknown>): AuditEntry {
+  return {
+    id: row.id as string,
+    toolCallId: row.tool_call_id as string,
+    tool: row.tool as string,
+    agentId: row.agent_id as string | undefined,
+    sessionId: row.session_id as string | undefined,
+    riskScore: row.risk_score as number,
+    riskLevel: row.risk_level as AuditEntry["riskLevel"],
+    decision: row.decision as AuditEntry["decision"],
+    approvalStatus: row.approval_status as AuditEntry["approvalStatus"],
+    riskFindings: row.risk_findings as string,
+    secretFindings: row.secret_findings as string,
+    sanitizedArgsSnapshot: row.sanitized_args as string,
+    createdAt: row.created_at as string,
+    resolvedAt: row.resolved_at as string | undefined,
+  };
 }

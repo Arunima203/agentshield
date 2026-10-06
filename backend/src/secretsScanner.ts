@@ -102,7 +102,7 @@ function redactObject(
 }
 
 const SENSITIVE_KEY_RE =
-  /^(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|authorization|credential|credentials|x-api-key|aws|azure|gcp|key|db|database|sql).*$/i;
+  /^(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth|authorization|credential|credentials|x-api-key)$/i;
 
 function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_RE.test(key);

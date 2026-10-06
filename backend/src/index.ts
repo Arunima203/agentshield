@@ -1,9 +1,8 @@
 import "dotenv/config";
 import { createApp } from "./app";
 import { loadConfig } from "./config";
-import { initDatabase } from "./database";
+import { getDb } from "./auditLogger";
 import { sweepTimeouts } from "./approvalGate";
-import { initializeDefaultUsers } from "./initUsers";
 import { logger } from "./logger";
 
 const CTX = "Bootstrap";
@@ -13,25 +12,18 @@ async function main(): Promise<void> {
   const config = loadConfig();
   logger.info(CTX, `Config loaded (version=${config.version})`);
 
-  // 2. Initialize database with migrations
-  await initDatabase();
+  // 2. Initialise database (runs migrations)
+  await getDb();
 
-  // 3. Initialize default users
-  await initializeDefaultUsers();
-
-  // 4. Start approval-timeout sweep every 60 s
+  // 3. Start approval-timeout sweep every 60 s
   setInterval(async () => {
-    try {
-      const swept = await sweepTimeouts();
-      if (swept > 0) {
-        logger.info(CTX, `Swept ${swept} timed-out approval requests`);
-      }
-    } catch (error) {
-      logger.error(CTX, "Approval timeout sweep failed", error);
+    const swept = await sweepTimeouts();
+    if (swept > 0) {
+      logger.info(CTX, `Swept ${swept} timed-out approval requests`);
     }
   }, 60_000);
 
-  // 5. Start HTTP server
+  // 4. Start HTTP server
   const app = createApp();
   const port = parseInt(process.env.PORT ?? "3000", 10);
   const host = process.env.HOST ?? "localhost";
@@ -41,10 +33,6 @@ async function main(): Promise<void> {
     logger.info(CTX, `Approval mode : ${process.env.APPROVAL_MODE ?? "auto"}`);
     logger.info(CTX, `Risk thresholds — block: ${config.risk.block_threshold}, review: ${config.risk.review_threshold}`);
     logger.info(CTX, "────────────────────────────────────────────────");
-    logger.info(CTX, "  POST /auth/login               authenticate user");
-    logger.info(CTX, "  POST /auth/refresh             refresh access token");
-    logger.info(CTX, "  GET  /auth/verify              verify access token");
-    logger.info(CTX, "  POST /auth/logout              logout (acknowledgment)");
     logger.info(CTX, "  POST /inspect                  inspect a tool call");
     logger.info(CTX, "  GET  /approvals                list pending approvals");
     logger.info(CTX, "  POST /approvals/:id/approve    approve a tool call");

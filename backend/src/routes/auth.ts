@@ -1,135 +1,88 @@
-/**
- * auth.ts
- *
- * Authentication routes for login, logout, token verification, and refresh.
- */
-
-import { Router, Request, Response } from 'express';
-import { getUserByEmail, updateLastLogin, verifyPassword } from '../userManager';
-import { createTokenPair, verifyAccessToken, verifyRefreshToken, refreshAccessToken } from '../tokenManager';
-import { logger } from '../logger';
+import { Router, Request, Response } from "express";
 
 const router = Router();
-const CTX = 'AuthRoutes';
+
+// Demo users — matches Deepak's frontend demo credentials
+const DEMO_USERS: Record<string, { password: string; role: string; name: string }> = {
+  admin: { password: "AgentShield29241", role: "admin", name: "Admin User" },
+  operator: { password: "security-ops", role: "operator", name: "Security Operator" },
+};
+
+// Simple token — just base64 encoded username:role (no real JWT needed for demo)
+function makeToken(username: string, role: string): string {
+  const payload = Buffer.from(JSON.stringify({
+    sub: username, role, iat: Date.now(), exp: Date.now() + 24 * 60 * 60 * 1000
+  })).toString("base64");
+  return `demo.${payload}.signature`;
+}
 
 /**
  * POST /auth/login
- * Authenticate user with email and password.
  */
-router.post('/login', async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+router.post("/login", (req: Request, res: Response) => {
+  const { username, email, password } = req.body as {
+    username?: string; email?: string; password?: string;
+  };
 
-  if (!email || !password) {
-    return res.status(400).json({
-      error: 'Missing email or password',
-    });
+  const user = username ?? email ?? "";
+  const key = user.toLowerCase().split("@")[0]; // handle email format too
+
+  const found = DEMO_USERS[key];
+
+  if (!found || found.password !== password) {
+    res.status(401).json({ error: "Invalid credentials" });
+    return;
   }
 
-  try {
-    // Find user
-    const user = await getUserByEmail(email);
-    if (!user) {
-      logger.warn(CTX, `Login attempt for non-existent user: ${email}`);
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Verify password
-    const passwordValid = await verifyPassword(password, user.passwordHash);
-    if (!passwordValid) {
-      logger.warn(CTX, `Failed login attempt for user: ${email}`);
-      return res.status(401).json({ error: 'Invalid email or password' });
-    }
-
-    // Update last login
-    await updateLastLogin(user.id);
-
-    // Create token pair
-    const tokens = createTokenPair({
-      userId: user.id,
-      email: user.email,
-      role: user.role,
-    });
-
-    logger.info(CTX, `User logged in: ${email}`);
-
-    res.json({
-      message: 'Login successful',
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-      },
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    });
-  } catch (err) {
-    logger.error(CTX, `Login error: ${err instanceof Error ? err.message : String(err)}`);
-    res.status(500).json({ error: 'Login failed' });
-  }
-});
-
-/**
- * POST /auth/refresh
- * Refresh an access token using a refresh token.
- */
-router.post('/refresh', (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
-
-  if (!refreshToken) {
-    return res.status(400).json({ error: 'Missing refresh token' });
-  }
-
-  try {
-    const newAccessToken = refreshAccessToken(refreshToken);
-    if (!newAccessToken) {
-      return res.status(401).json({ error: 'Invalid or expired refresh token' });
-    }
-
-    res.json({
-      accessToken: newAccessToken,
-    });
-  } catch (err) {
-    logger.error(CTX, `Token refresh error: ${err instanceof Error ? err.message : String(err)}`);
-    res.status(500).json({ error: 'Token refresh failed' });
-  }
-});
-
-/**
- * GET /auth/verify
- * Verify that the current access token is valid.
- */
-router.get('/verify', (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid authorization header' });
-  }
-
-  const token = authHeader.slice(7);
-  const payload = verifyAccessToken(token);
-
-  if (!payload) {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-
+  const token = makeToken(key, found.role);
   res.json({
-    message: 'Token is valid',
-    user: {
-      userId: payload.userId,
-      email: payload.email,
-      role: payload.role,
-    },
-    expiresIn: '15m',
+    access_token: token,
+    accessToken: token,
+    refresh_token: token,
+    refreshToken: token,
+    token_type: "Bearer",
+    user: { id: key, username: key, email: `${key}@agentshield.local`, role: found.role, name: found.name },
   });
 });
 
 /**
- * POST /auth/logout
- * Logout (currently just an acknowledgment; real logout would invalidate tokens server-side).
+ * POST /auth/refresh
  */
-router.post('/logout', (req: Request, res: Response) => {
-  // In a production system, you'd add the token to a blacklist or revocation list
-  logger.info(CTX, 'User logged out');
-  res.json({ message: 'Logout successful' });
+router.post("/refresh", (req: Request, res: Response) => {
+  const { refresh_token, refreshToken } = req.body as { refresh_token?: string; refreshToken?: string };
+  const token = refresh_token ?? refreshToken;
+  if (!token) {
+    res.status(401).json({ error: "No refresh token" });
+    return;
+  }
+  res.json({ access_token: token, accessToken: token, token_type: "Bearer" });
+});
+
+/**
+ * GET /auth/verify
+ */
+router.get("/verify", (req: Request, res: Response) => {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) {
+    res.status(401).json({ error: "No token" });
+    return;
+  }
+  const token = auth.slice(7);
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) throw new Error("bad token");
+    const payload = JSON.parse(Buffer.from(parts[1], "base64").toString());
+    res.json({ valid: true, user: { id: payload.sub, username: payload.sub, role: payload.role } });
+  } catch {
+    res.status(401).json({ error: "Invalid token" });
+  }
+});
+
+/**
+ * POST /auth/logout
+ */
+router.post("/logout", (_req: Request, res: Response) => {
+  res.json({ message: "Logged out successfully" });
 });
 
 export default router;

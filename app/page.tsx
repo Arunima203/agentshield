@@ -29,7 +29,7 @@ const staticThreats = [
 const nav = [
   'Overview', 'Agents', 'Playground', 'Workflows',
   'Live Monitor', 'Threats', 'Policies', 'Approvals',
-  'Evaluations', 'Settings',
+  'Evaluations', 'Settings', 'Demo',
 ]
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -722,6 +722,11 @@ function Evaluations() {
   )
 }
 
+function DemoRedirect() {
+  if (typeof window !== 'undefined') window.location.href = '/demo'
+  return null
+}
+
 function SettingsPage() {
   return (
     <main className="workspace">
@@ -761,6 +766,7 @@ function App() {
     active === 'Policies'     ? <Policies /> :
     active === 'Approvals'    ? <ApprovalsPage /> :
     active === 'Evaluations'  ? <Evaluations /> :
+    active === 'Demo'         ? <DemoRedirect /> :
     <SettingsPage />
 
   return (

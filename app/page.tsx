@@ -193,7 +193,11 @@ function Overview() {
     }
   }, [accessToken])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    void load()
+    const intervalId = window.setInterval(() => { void load() }, 5000)
+    return () => window.clearInterval(intervalId)
+  }, [load])
 
   const blocked   = stats?.byDecision.find(d => d.decision === 'block')?.count ?? 0
   const allowed   = stats?.byDecision.find(d => d.decision === 'allow')?.count ?? 0
@@ -312,7 +316,11 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
     }
   }, [compact, accessToken])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    void load()
+    const intervalId = window.setInterval(() => { void load() }, 5000)
+    return () => window.clearInterval(intervalId)
+  }, [load])
 
   async function handleApprove(id: string) {
     if (!accessToken) return
@@ -325,7 +333,7 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
   async function handleReject(id: string) {
     if (!accessToken) return
     setActing(id)
-    try { await rejectRequest(id, accessToken, 'operator', 'Denied by operator'); await load() }
+    try { await rejectRequest(id, accessToken, 'Denied by operator'); await load() }
     catch (e) { alert(e instanceof Error ? e.message : 'Error') }
     finally { setActing(null) }
   }
@@ -413,7 +421,11 @@ function MonitorPage() {
     }
   }, [filter, accessToken])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    void load()
+    const intervalId = window.setInterval(() => { void load() }, 5000)
+    return () => window.clearInterval(intervalId)
+  }, [load])
 
   const filtered = filter === 'Critical'
     ? entries.filter(e => e.riskLevel === 'critical')
@@ -422,7 +434,7 @@ function MonitorPage() {
   return (
     <main className="workspace">
       <PageHead
-        eyebrow="LIVE MONITOR / EVENT STREAM"
+        eyebrow="LIVE MONITOR / 5S POLL"
         title="Live Security Monitor"
         description="Every agent action, analyzed and decided at runtime."
         action={

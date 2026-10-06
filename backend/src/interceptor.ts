@@ -10,7 +10,6 @@ import { getConfig } from "./config";
 import { assessRisk } from "./riskDetector";
 import { scanAndRedact } from "./secretsScanner";
 import { createApprovalRequest, autoApprove, autoBlock } from "./approvalGate";
-import { writeAuditEntry } from "./auditLogger";
 import { logger } from "./logger";
 import { getLLMService, type LLMSecurityAnalysis } from "./llmService";
 import type {
@@ -150,21 +149,16 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     approvalStatus = "pending";
   } else {
     // Auto mode — use combined risk score thresholds
-    // CRITICAL: Check requireApproval BEFORE block threshold
-    // This allows high-risk tools (90, 85) to reach human approval instead of auto-blocking
-    if (
-      riskAssessment.requireApproval ||
-      finalScore >= config.risk.review_threshold
-    ) {
-      // Tool marked for approval OR score between review and block thresholds
+    if (riskAssessment.requireApproval) {
       decision = "require_approval";
       approvalStatus = "pending";
     } else if (finalScore >= config.risk.block_threshold) {
-      // Score exceeds block threshold AND not marked for approval
       decision = "block";
       approvalStatus = "auto_blocked";
+    } else if (finalScore >= config.risk.review_threshold) {
+      decision = "require_approval";
+      approvalStatus = "pending";
     } else {
-      // Low risk
       decision = "allow";
       approvalStatus = "auto_approved";
     }
@@ -194,30 +188,7 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     scoreSources: scoreSources,
   };
 
-  // ── Step 7: Approval request ──────────────────────────────────────────────
-  let approvalRequestId: string | undefined;
-
-  // Create a sanitized copy of the tool call for storage (secrets removed)
-  const sanitizedToolCall: ToolCall = {
-    ...toolCall,
-    args: sanitizedArgs as Record<string, unknown>,
-  };
-
-  if (decision === "require_approval") {
-    const approvalReq = await createApprovalRequest(sanitizedToolCall, inspection);
-    approvalRequestId = approvalReq.id;
-    logger.info(CTX, `Approval required — request id=${approvalRequestId} for tool="${toolCall.tool}"`);
-  } else {
-    // Still persist an already-resolved approval record for full audit trail
-    const rec = await createApprovalRequest(sanitizedToolCall, inspection);
-    if (decision === "allow") {
-      await autoApprove(rec.id, toolCall.id);
-    } else {
-      await autoBlock(rec.id, toolCall.id);
-    }
-  }
-
-  // ── Step 8: Audit log ─────────────────────────────────────────────────────
+  // ── Step 7: Persist audit and approval atomically ─────────────────────────
   const auditEntry: AuditEntry = {
     id: uuidv4(),
     toolCallId: toolCall.id,
@@ -236,9 +207,23 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     createdAt: now,
   };
 
-  await writeAuditEntry(auditEntry);
+  const sanitizedToolCall: ToolCall = {
+    ...toolCall,
+    args: sanitizedArgs as Record<string, unknown>,
+  };
+  const approvalReq = await createApprovalRequest(sanitizedToolCall, inspection, auditEntry);
+  let approvalRequestId: string | undefined;
 
-  // ── Step 9: Response ──────────────────────────────────────────────────────
+  if (decision === "require_approval") {
+    approvalRequestId = approvalReq.id;
+    logger.info(CTX, `Approval required — request id=${approvalRequestId} for tool="${toolCall.tool}"`);
+  } else if (decision === "allow") {
+    await autoApprove(approvalReq.id, toolCall.id);
+  } else {
+    await autoBlock(approvalReq.id, toolCall.id);
+  }
+
+  // ── Step 8: Response ─────────────────────────────────────────────────────
   const message = buildMessage(
     decision,
     finalScore,

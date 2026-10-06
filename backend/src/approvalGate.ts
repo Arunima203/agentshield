@@ -6,13 +6,13 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { query, queryOne, queryNone, transaction, getDb } from './database';
-import { updateAuditApproval } from './auditLogger';
+import { query, queryOne, transaction } from './database';
 import { logger } from './logger';
 import type {
   ApprovalRequest,
   ApprovalDecision,
   ApprovalStatus,
+  AuditEntry,
   InspectionResult,
   ToolCall,
 } from './types';
@@ -24,29 +24,53 @@ const CTX = 'ApprovalGate';
 export async function createApprovalRequest(
   toolCall: ToolCall,
   inspection: InspectionResult,
+  auditEntry: AuditEntry,
   timeoutMs?: number
 ): Promise<ApprovalRequest> {
   const id = uuidv4();
   const now = new Date().toISOString();
 
   try {
-    const sql = `
+    const auditSql = `
+      INSERT INTO audit_log (
+        id, tool_call_id, tool, agent_id, session_id,
+        risk_score, risk_level, decision, approval_status,
+        risk_findings, secret_findings, sanitized_args_snapshot, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `;
+    const approvalSql = `
       INSERT INTO approval_requests (
         id, tool_call_id, tool_call_json, inspection_json, 
         status, created_at, timeout_ms
       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
     `;
 
-    await queryNone(sql, [
-      id,
-      toolCall.id,
-      JSON.stringify(toolCall),
-      JSON.stringify(inspection),
-      'pending',
-      now,
-      timeoutMs ?? null,
-    ]);
+    await transaction(async (t) => {
+      await t.none(auditSql, [
+        auditEntry.id,
+        auditEntry.toolCallId,
+        auditEntry.tool,
+        auditEntry.agentId || null,
+        auditEntry.sessionId || null,
+        auditEntry.riskScore,
+        auditEntry.riskLevel,
+        auditEntry.decision,
+        auditEntry.approvalStatus,
+        auditEntry.riskFindings || null,
+        auditEntry.secretFindings || null,
+        auditEntry.sanitizedArgsSnapshot || null,
+        auditEntry.createdAt,
+      ]);
+      await t.none(approvalSql, [
+        id,
+        toolCall.id,
+        JSON.stringify(toolCall),
+        JSON.stringify(inspection),
+        'pending',
+        now,
+        timeoutMs ?? null,
+      ]);
+    });
 
     logger.info(
       CTX,
@@ -65,6 +89,18 @@ export async function createApprovalRequest(
     logger.error(CTX, `Failed to create approval request: ${error instanceof Error ? error.message : String(error)}`);
     throw error;
   }
+}
+
+async function updateAuditApprovalInTransaction(
+  t: any,
+  toolCallId: string,
+  status: ApprovalStatus,
+  timestamp: string
+): Promise<void> {
+  await t.none(
+    'UPDATE audit_log SET approval_status = $1, updated_at = $2 WHERE tool_call_id = $3',
+    [status, timestamp, toolCallId]
+  );
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
@@ -156,8 +192,7 @@ export async function resolveApproval(decision: ApprovalDecision): Promise<Appro
       `;
       await t.none(sql, [newStatus, now, decision.resolvedBy, decision.rejectionReason ?? null, decision.requestId]);
 
-      // Update audit log
-      await updateAuditApproval(existing.toolCall.id, newStatus, now);
+      await updateAuditApprovalInTransaction(t, existing.toolCall.id, newStatus, now);
     });
 
     logger.info(
@@ -185,7 +220,7 @@ export async function autoApprove(requestId: string, toolCallId: string): Promis
         WHERE id = $2
       `;
       await t.none(sql, [now, requestId]);
-      await updateAuditApproval(toolCallId, 'auto_approved', now);
+      await updateAuditApprovalInTransaction(t, toolCallId, 'auto_approved', now);
     });
 
     logger.debug(CTX, `Auto-approved: requestId=${requestId}`);
@@ -206,7 +241,7 @@ export async function autoBlock(requestId: string, toolCallId: string): Promise<
         WHERE id = $2
       `;
       await t.none(sql, [now, requestId]);
-      await updateAuditApproval(toolCallId, 'auto_blocked', now);
+      await updateAuditApprovalInTransaction(t, toolCallId, 'auto_blocked', now);
     });
 
     logger.debug(CTX, `Auto-blocked: requestId=${requestId}`);
@@ -225,7 +260,7 @@ export async function sweepTimeouts(): Promise<number> {
       FROM approval_requests
       WHERE status = 'pending' 
         AND timeout_ms IS NOT NULL
-        AND (CURRENT_TIMESTAMP - created_at) * 1000 >= timeout_ms
+      AND CURRENT_TIMESTAMP - created_at >= timeout_ms * INTERVAL '1 millisecond'
     `;
 
     const toTimeout = await query<any>(sql);
@@ -239,7 +274,7 @@ export async function sweepTimeouts(): Promise<number> {
           WHERE id = $2
         `;
         await t.none(updateSql, [now, item.id]);
-        await updateAuditApproval(item.tool_call_id, 'timeout', now);
+        await updateAuditApprovalInTransaction(t, item.tool_call_id, 'timeout', now);
       });
 
       logger.warn(CTX, `Approval request ${item.id} timed out`);

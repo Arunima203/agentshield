@@ -10,12 +10,13 @@ import { verifyAccessToken } from "../tokenManager";
 import { logger } from "../logger";
 
 const CTX = "JwtAuth";
+export type UserRole = "admin" | "approver" | "auditor" | "agent" | "guest";
 
 export interface AuthenticatedRequest extends Request {
   user?: {
     userId: string;
     email: string;
-    role: "admin" | "approver" | "auditor" | "agent" | "guest";
+    role: UserRole;
   };
 }
 
@@ -50,4 +51,21 @@ export function jwtAuth(req: AuthenticatedRequest, res: Response, next: NextFunc
 
   logger.debug(CTX, `Authenticated request from user=${payload.email}`);
   next();
+}
+
+export function requireRole(...allowedRoles: UserRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const user = (req as AuthenticatedRequest).user;
+    if (!user) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    if (!allowedRoles.includes(user.role)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    next();
+  };
 }

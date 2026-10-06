@@ -21,9 +21,13 @@ async function main(): Promise<void> {
 
   // 4. Start approval-timeout sweep every 60 s
   setInterval(async () => {
-    const swept = await sweepTimeouts();
-    if (swept > 0) {
-      logger.info(CTX, `Swept ${swept} timed-out approval requests`);
+    try {
+      const swept = await sweepTimeouts();
+      if (swept > 0) {
+        logger.info(CTX, `Swept ${swept} timed-out approval requests`);
+      }
+    } catch (error) {
+      logger.error(CTX, "Approval timeout sweep failed", error);
     }
   }, 60_000);
 

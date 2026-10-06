@@ -5,7 +5,7 @@ version: "1"
 
 # ─── Risk Thresholds ───────────────────────────────────────────────────────────
 risk:
-  # Score 0–100. Actions scoring >= block_threshold are blocked outright.
+  # Scores >= block_threshold are blocked unless a tool rule requires approval.
   block_threshold: 80
   # Actions scoring >= review_threshold require human approval.
   review_threshold: 50

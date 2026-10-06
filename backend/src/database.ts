@@ -73,7 +73,7 @@ export function getDb() {
 
 // ─── Schema Management ────────────────────────────────────────────────────────
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 interface SchemaMigration {
   version: number;
@@ -123,6 +123,7 @@ const migrations: SchemaMigration[] = [
         secret_findings JSONB,
         sanitized_args_snapshot JSONB,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP,
         CONSTRAINT audit_log_unique UNIQUE(tool_call_id)
       );
 
@@ -198,6 +199,14 @@ const migrations: SchemaMigration[] = [
       JOIN audit_log al ON ar.tool_call_id = al.id
       WHERE ar.status = 'pending'
       ORDER BY ar.created_at ASC;
+    `,
+  },
+  {
+    version: 2,
+    name: 'audit_log_updated_at',
+    up: `
+      ALTER TABLE audit_log
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
     `,
   },
 ];

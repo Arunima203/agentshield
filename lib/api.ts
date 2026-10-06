@@ -145,24 +145,21 @@ export async function getApprovals(
 
 export async function approveRequest(
   id: string,
-  token: string,
-  resolvedBy = "operator"
+  token: string
 ): Promise<{ message: string; request: ApprovalRequest }> {
   return request(`/approvals/${id}/approve`, token, {
     method: "POST",
-    body: JSON.stringify({ resolvedBy }),
   });
 }
 
 export async function rejectRequest(
   id: string,
   token: string,
-  resolvedBy = "operator",
   rejectionReason?: string
 ): Promise<{ message: string; request: ApprovalRequest }> {
   return request(`/approvals/${id}/reject`, token, {
     method: "POST",
-    body: JSON.stringify({ resolvedBy, rejectionReason }),
+    body: JSON.stringify({ rejectionReason }),
   });
 }
 

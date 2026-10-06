@@ -43,7 +43,12 @@ export class LLMService {
 
   constructor(baseUrl?: string, timeout?: number) {
     this.baseUrl = (baseUrl || process.env.LLM_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
-    this.timeout = timeout || 30000; // 30 second timeout by default
+    const configuredTimeout = Number(process.env.LLM_API_TIMEOUT_MS ?? 75000);
+    this.timeout = timeout ?? (
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : 75000
+    );
 
     this.client = axios.create({
       baseURL: this.baseUrl,

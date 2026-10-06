@@ -1,0 +1,16 @@
+# SSL certificates directory
+# 
+# For development, generate self-signed certificates:
+# 
+#   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+#     -subj "/CN=agentshield.local"
+# 
+# For production, use Let's Encrypt:
+# 
+#   docker run --rm -it \
+#     -v ./nginx/ssl:/etc/letsencrypt \
+#     -v ./nginx/.well-known:/var/www/certbot \
+#     certbot/certbot certonly --standalone \
+#     -d agentshield.yourdomain.com \
+#     --email admin@yourdomain.com \
+#     --agree-tos --no-eff-email

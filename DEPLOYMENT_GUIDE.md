@@ -1,725 +1,540 @@
-# AgentShield LLM — Deployment Guide
+# AgentShield Deployment Guide
 
-Production deployment checklist and configurations.
+This guide covers containerization and deployment of AgentShield using Docker and Docker Compose.
 
-## Pre-Deployment Checklist
+## Quick Start (Development)
 
-- [ ] Ollama installed and tested locally
-- [ ] LLM model(s) pulled: `ollama pull qwen2.5:7b`
-- [ ] Backend dependencies installed: `npm install`
-- [ ] Python dependencies installed: `pip install -r requirements.txt`
-- [ ] Environment variables configured
-- [ ] All e2e tests passing
-- [ ] Load testing completed
-- [ ] Monitoring/alerting configured
-- [ ] Documentation reviewed by team
+### Prerequisites
+- Docker & Docker Compose installed
+- Node.js 18+ (optional, for local development)
+- Python 3.11+ (optional, for local development)
 
-## Environment Variables
-
-### Backend (`backend/.env`)
+### Local Development Stack
 
 ```bash
-# Server
-PORT=5000
-NODE_ENV=production
+# Start core services (PostgreSQL + Backend)
+docker-compose up
 
-# Approval
-APPROVAL_MODE=auto              # auto | strict | audit
-ENABLE_LLM=true
-
-# LLM Service Connection
-LLM_API_URL=http://127.0.0.1:8000
-LLM_API_TIMEOUT=30000           # 30 seconds
-
-# Database (if using external)
-DB_HOST=localhost
-DB_PORT=3306
-DB_NAME=agentshield
-DB_USER=agentshield
-DB_PASSWORD=secure_password
-
-# Logging
-LOG_LEVEL=info                  # debug | info | warn | error
-LOG_FILE=logs/app.log
-
-# JWT
-JWT_SECRET=your-secure-secret-key
-JWT_EXPIRY=24h
+# In another terminal, start LLM services (optional)
+docker-compose --profile llm up
 ```
 
-### Python LLM (`llm/.env`)
+**Services:**
+- Backend: http://localhost:3000
+- PostgreSQL: localhost:5432 (inside docker network)
+- LLM API: http://localhost:8000 (with profile)
+- Ollama: http://localhost:11434 (with profile)
+
+**Environment:** `docker-compose.yml` uses development defaults
+- PostgreSQL: agentshield / agentshield_password
+- JWT secrets: dev-only values (change in production)
+- Log level: debug
+
+---
+
+## Production Deployment
+
+### Prerequisites
+- Docker & Docker Compose 1.29+
+- A server with: 4+ CPU cores, 8+ GB RAM
+- HTTPS certificates (or use Let's Encrypt)
+- Domain name configured
+
+### 1. SSL/TLS Certificates
+
+#### Option A: Self-Signed (Development/Testing)
+```bash
+# Generate self-signed cert for 365 days
+openssl req -x509 -newkey rsa:4096 -keyout nginx/ssl/key.pem -out nginx/ssl/cert.pem -days 365 -nodes \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=agentshield.local"
+```
+
+#### Option B: Let's Encrypt (Production)
+```bash
+# Ensure nginx/ssl directory exists
+mkdir -p nginx/ssl
+
+# Generate certificate with certbot
+docker run --rm -v ./nginx/ssl:/etc/letsencrypt \
+  -v ./nginx/.well-known:/var/www/certbot \
+  certbot/certbot certonly --standalone \
+  -d agentshield.yourdomain.com \
+  --email admin@yourdomain.com \
+  --agree-tos --no-eff-email
+
+# Copy certificates to nginx/ssl
+cp nginx/ssl/live/agentshield.yourdomain.com/fullchain.pem nginx/ssl/cert.pem
+cp nginx/ssl/live/agentshield.yourdomain.com/privkey.pem nginx/ssl/key.pem
+```
+
+### 2. Configure Environment
+
+Create `.env.production`:
+```bash
+# Database
+DB_USER=agentshield_prod
+DB_PASSWORD=$(openssl rand -base64 32)
+DB_POOL_SIZE=20
+
+# JWT Secrets (generate new ones)
+JWT_ACCESS_SECRET=$(openssl rand -base64 32)
+JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+
+# Grafana
+GRAFANA_PASSWORD=$(openssl rand -base64 16)
+```
+
+Load the environment:
+```bash
+source .env.production
+# Or on Windows:
+# $env:DB_USER="agentshield_prod"; $env:DB_PASSWORD="..."; etc.
+```
+
+### 3. HTTP Basic Auth (Prometheus/Grafana)
+
+Generate credentials:
+```bash
+# Install htpasswd if needed
+# Mac: brew install httpd
+# Linux: sudo apt-get install apache2-utils
+# Windows: Use WSL or online generator
+
+htpasswd -cb nginx/.htpasswd admin admin_secure_password_here
+chmod 600 nginx/.htpasswd  # Restrict permissions
+```
+
+### 4. Build Images
 
 ```bash
-# Ollama Configuration
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5:7b
-OLLAMA_TIMEOUT=60               # Seconds
-OLLAMA_NUM_PARALLEL=4           # Parallel requests
+# Build all images
+docker-compose -f docker-compose.prod.yml build
 
-# LLM Parameters
-LLM_TEMPERATURE=0               # 0 = deterministic
-LLM_TOP_P=0.95
-
-# FastAPI Server
-LLM_API_HOST=0.0.0.0           # 0.0.0.0 for network access
-LLM_API_PORT=8000
-LOG_LEVEL=info
-
-# Security
-API_KEY=optional-api-key        # For authentication
-ALLOWED_ORIGINS=http://localhost:5000,https://your-domain.com
+# Or build individually
+docker build -f backend/Dockerfile -t agentshield-backend:latest .
+docker build -f llm/Dockerfile -t agentshield-llm:latest .
+docker build -f nginx/Dockerfile -t agentshield-nginx:latest .
 ```
 
-## Deployment Scenarios
+### 5. Start Production Stack
 
-### Scenario 1: Single Machine (Development/Testing)
-
-All services on one machine.
-
-```
-┌─────────────────────────────────┐
-│      Single Server              │
-│  ┌──────────────────────────┐   │
-│  │ Ollama                   │   │
-│  │ (Port 11434)             │   │
-│  └───────────┬──────────────┘   │
-│              │                  │
-│  ┌───────────▼──────────────┐   │
-│  │ FastAPI LLM Service      │   │
-│  │ (Port 8000)              │   │
-│  └───────────┬──────────────┘   │
-│              │                  │
-│  ┌───────────▼──────────────┐   │
-│  │ Node.js Backend          │   │
-│  │ (Port 5000)              │   │
-│  └──────────────────────────┘   │
-└─────────────────────────────────┘
-```
-
-**Start Order:**
 ```bash
-# Terminal 1
-ollama serve
+# Bring up services in correct order
+docker-compose -f docker-compose.prod.yml up -d
 
-# Terminal 2
-python -m llm.fastapi_server
-
-# Terminal 3
-npm run dev
-```
-
-**RAM Required:** 8GB+
-**Disk:** 10GB+ (for model)
-
----
-
-### Scenario 2: Separate Services (Production)
-
-LLM service on dedicated GPU machine.
-
-```
-┌──────────────────────────────┐
-│   GPU Server                 │
-│  ┌────────────────────────┐  │
-│  │ Ollama                 │  │
-│  │ (CPU or GPU optimized) │  │
-│  └───────────┬────────────┘  │
-│              │                │
-│  ┌───────────▼────────────┐  │
-│  │ FastAPI LLM Service    │  │
-│  │ :8000                  │  │
-│  └────────────────────────┘  │
-└──────────────┬───────────────┘
-               │
-        [Network: HTTP]
-               │
-┌──────────────▼───────────────┐
-│   Application Server         │
-│  ┌────────────────────────┐  │
-│  │ Node.js Backend        │  │
-│  │ :5000                  │  │
-│  │                        │  │
-│  │ Calls LLM API over     │  │
-│  │ HTTP with retry logic  │  │
-│  └────────────────────────┘  │
-└──────────────────────────────┘
-```
-
-**Configuration:**
-```bash
-# On GPU server (server1.example.com:8000)
-OLLAMA_BASE_URL=http://localhost:11434
-LLM_API_HOST=0.0.0.0
-
-# On app server (server2.example.com:5000)
-LLM_API_URL=http://server1.example.com:8000
-```
-
-**Network Requirements:**
-- Allow port 8000 from app server to GPU server
-- Use HTTPS in production: Add reverse proxy (Nginx)
-- Consider: VPC, security groups, firewalls
-
----
-
-### Scenario 3: Kubernetes Deployment
-
-Scalable cloud deployment.
-
-```yaml
-# kubernetes-deployment.yaml
-
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: agentshield
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ollama-server
-  namespace: agentshield
-spec:
-  replicas: 1  # Single Ollama instance (GPU)
-  selector:
-    matchLabels:
-      app: ollama
-  template:
-    metadata:
-      labels:
-        app: ollama
-    spec:
-      containers:
-      - name: ollama
-        image: ollama/ollama:latest
-        ports:
-        - containerPort: 11434
-        resources:
-          limits:
-            nvidia.com/gpu: 1  # Requires GPU node
-          requests:
-            memory: "8Gi"
-            cpu: "4"
-        volumeMounts:
-        - name: ollama-data
-          mountPath: /root/.ollama
-      volumes:
-      - name: ollama-data
-        persistentVolumeClaim:
-          claimName: ollama-pvc
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: llm-api-service
-  namespace: agentshield
-spec:
-  replicas: 2  # Two replicas for HA
-  selector:
-    matchLabels:
-      app: llm-api
-  template:
-    metadata:
-      labels:
-        app: llm-api
-    spec:
-      containers:
-      - name: llm-api
-        image: agentshield/llm-api:latest
-        ports:
-        - containerPort: 8000
-        env:
-        - name: OLLAMA_BASE_URL
-          value: "http://ollama-server:11434"
-        - name: LLM_API_HOST
-          value: "0.0.0.0"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        resources:
-          requests:
-            memory: "1Gi"
-            cpu: "1"
-          limits:
-            memory: "2Gi"
-            cpu: "2"
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: llm-api-service
-  namespace: agentshield
-spec:
-  selector:
-    app: llm-api
-  ports:
-  - port: 8000
-    targetPort: 8000
-  type: ClusterIP
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: backend-service
-  namespace: agentshield
-spec:
-  replicas: 3  # Multiple replicas
-  selector:
-    matchLabels:
-      app: backend
-  template:
-    metadata:
-      labels:
-        app: backend
-    spec:
-      containers:
-      - name: backend
-        image: agentshield/backend:latest
-        ports:
-        - containerPort: 5000
-        env:
-        - name: LLM_API_URL
-          value: "http://llm-api-service:8000"
-        - name: NODE_ENV
-          value: "production"
-        - name: LOG_LEVEL
-          value: "info"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 5000
-          initialDelaySeconds: 15
-          periodSeconds: 10
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "500m"
-          limits:
-            memory: "1Gi"
-            cpu: "1000m"
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend-service
-  namespace: agentshield
-spec:
-  selector:
-    app: backend
-  ports:
-  - port: 5000
-    targetPort: 5000
-  type: LoadBalancer
-```
-
-**Deploy:**
-```bash
-kubectl apply -f kubernetes-deployment.yaml
-
-# Check status
-kubectl get pods -n agentshield
-kubectl get svc -n agentshield
+# Check service health
+docker-compose -f docker-compose.prod.yml ps
 
 # View logs
-kubectl logs -n agentshield deployment/backend-service -f
+docker-compose -f docker-compose.prod.yml logs -f
 ```
 
----
-
-## Docker Containerization
-
-### Dockerfile: Python LLM Service
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements
-COPY llm/requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy code
-COPY llm/ ./llm/
-COPY llm/fastapi_server.py ./
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-EXPOSE 8000
-
-CMD ["python", "-m", "llm.fastapi_server"]
+**Expected output:**
+```
+CONTAINER ID   IMAGE                           STATUS              
+xxx            agentshield-nginx               Up 5s (healthy)
+xxx            agentshield-backend-1           Up 4s (healthy)
+xxx            agentshield-backend-2           Up 4s (healthy)
+xxx            agentshield-backend-3           Up 4s (healthy)
+xxx            agentshield-ollama              Up 10s (healthy)
+xxx            agentshield-llm-api             Up 3s (healthy)
+xxx            agentshield-postgres            Up 2s (healthy)
+xxx            agentshield-prometheus          Up 2s
+xxx            agentshield-grafana             Up 2s
 ```
 
-### Dockerfile: Node.js Backend
+### 6. Initialize Data
 
-```dockerfile
-FROM node:18-alpine
-
-WORKDIR /app
-
-# Copy package files
-COPY backend/package*.json ./
-
-# Install dependencies
-RUN npm ci --only=production
-
-# Copy code
-COPY backend/src ./src/
-COPY backend/tsconfig.json ./
-
-# Compile TypeScript
-RUN npm run build
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:5000/health || exit 1
-
-EXPOSE 5000
-
-CMD ["node", "dist/index.js"]
-```
-
-### Docker Compose
-
-```yaml
-version: '3.8'
-
-services:
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    environment:
-      - OLLAMA_MODELS=/root/.ollama/models
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  llm-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.llm
-    ports:
-      - "8000:8000"
-    environment:
-      OLLAMA_BASE_URL: "http://ollama:11434"
-      LLM_API_HOST: "0.0.0.0"
-      LOG_LEVEL: "info"
-    depends_on:
-      - ollama
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    ports:
-      - "5000:5000"
-    environment:
-      LLM_API_URL: "http://llm-api:8000"
-      NODE_ENV: "production"
-      LOG_LEVEL: "info"
-    depends_on:
-      - llm-api
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-volumes:
-  ollama-data:
-```
-
-**Deploy with Docker Compose:**
 ```bash
-docker-compose up -d
+# The database is auto-initialized via docker-entrypoint-initdb.d
+# Verify it's ready:
+docker-compose -f docker-compose.prod.yml exec postgres pg_isready -U agentshield_prod
 
-# View logs
-docker-compose logs -f
+# Check tables were created
+docker-compose -f docker-compose.prod.yml exec postgres psql -U agentshield_prod -d agentshield -c "\dt"
+```
 
-# Stop
-docker-compose down
+Expected tables:
+```
+schema_version
+users
+audit_log
+approval_requests
+configuration
+sessions
+```
+
+### 7. Verify Deployment
+
+**Backend Health:**
+```bash
+curl -k https://localhost/health  # Returns 200 OK with service info
+```
+
+**LLM Service:**
+```bash
+# Through nginx
+curl -k https://localhost/llm/health
+
+# Or direct (if exposed)
+curl http://localhost:8000/health
+```
+
+**Authentication:**
+```bash
+# Create default admin user (via init script)
+# Login endpoint available
+curl -X POST https://localhost/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@agentshield.local","password":"admin"}'
+```
+
+### 8. Test Tool Call Inspection
+
+```bash
+# After authentication, test tool inspection
+TOKEN=$(curl -X POST https://localhost/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@agentshield.local","password":"admin"}' \
+  | jq -r '.accessToken')
+
+curl -X POST https://localhost/api/inspect \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tool": "execute_pwsh",
+    "args": {"command": "echo hello"},
+    "agentId": "test-agent"
+  }'
+```
+
+Expected response:
+```json
+{
+  "toolCallId": "uuid",
+  "decision": "allow",
+  "riskScore": 15,
+  "riskLevel": "safe",
+  "message": "Tool call approved automatically (risk score: 15)"
+}
 ```
 
 ---
 
 ## Monitoring & Observability
 
+### Grafana Dashboards
+Access at: https://localhost/grafana
+
+**Login:**
+- Username: admin
+- Password: (from `.env.production` GRAFANA_PASSWORD)
+
+**Pre-configured dashboards:**
+- AgentShield Overview
+- Request latency
+- Error rate
+- Tool call decisions
+
 ### Prometheus Metrics
+Access at: https://localhost/metrics
 
-Add to backend:
-```typescript
-import prometheus from 'prom-client';
-
-const decisionCounter = new prometheus.Counter({
-  name: 'agentshield_decisions_total',
-  help: 'Total decisions by type',
-  labelNames: ['decision']
-});
-
-const riskScoreHistogram = new prometheus.Histogram({
-  name: 'agentshield_risk_score',
-  help: 'Risk score distribution',
-  buckets: [10, 30, 50, 70, 85, 100]
-});
-
-// In your decision logic
-decisionCounter.inc({ decision });
-riskScoreHistogram.observe(riskScore);
-
-app.get('/metrics', (req, res) => {
-  res.set('Content-Type', prometheus.register.contentType);
-  res.end(prometheus.register.metrics());
-});
+**Requires basic auth** (set via nginx/.htpasswd):
+```bash
+curl --user admin:password https://localhost/metrics
 ```
 
-### Grafana Dashboard
+### Application Logs
 
-Sample PromQL queries:
-```promql
-# Decision distribution
-rate(agentshield_decisions_total[5m])
-
-# Average risk score
-avg(agentshield_risk_score)
-
-# LLM availability
-increase(llm_availability[1h])
-
-# Response time percentiles
-histogram_quantile(0.95, rate(request_duration_seconds_bucket[5m]))
+**View backend logs:**
+```bash
+docker-compose -f docker-compose.prod.yml logs -f backend-1 backend-2 backend-3
 ```
 
-### Alert Rules
+**View nginx logs:**
+```bash
+docker-compose -f docker-compose.prod.yml exec nginx tail -f /var/log/nginx/agentshield_access.log
+```
+
+**View LLM logs:**
+```bash
+docker-compose -f docker-compose.prod.yml logs -f llm-api
+```
+
+---
+
+## Scaling & Performance
+
+### Database Connection Pooling
+Configured in `docker-compose.prod.yml`:
+```yaml
+DB_POOL_SIZE=20        # Max 20 connections
+DB_IDLE_TIMEOUT=30000  # 30s idle timeout
+```
+
+**Adjust based on load:**
+- Low traffic: 5-10 connections
+- Medium traffic: 10-20 connections
+- High traffic: 20-50 connections
+
+### Backend Replicas
+Production stack includes 3 backend replicas with **least-conn** load balancing:
+- Request 1 → backend-1
+- Request 2 → backend-2
+- Request 3 → backend-3
+- Request 4 → whichever has fewest active connections
+
+**Add more replicas:**
+```yaml
+backend-4:
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  # ... copy from backend-1, change container_name
+```
+
+### Ollama GPU Support
+By default, Ollama runs on CPU. To enable GPU (NVIDIA):
 
 ```yaml
-groups:
-- name: agentshield
-  rules:
-  - alert: HighBlockRate
-    expr: rate(agentshield_decisions_total{decision="block"}[5m]) > 0.1
-    for: 5m
-    annotations:
-      summary: "High rate of blocked decisions"
-
-  - alert: LLMServiceDown
-    expr: up{job="llm-api"} == 0
-    for: 1m
-    annotations:
-      summary: "LLM API service is down"
-
-  - alert: OllamaUnavailable
-    expr: up{job="ollama"} == 0
-    for: 1m
-    annotations:
-      summary: "Ollama server is down"
+ollama:
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
 ```
+
+Requires:
+- NVIDIA GPU with CUDA support
+- nvidia-docker or Docker 20.10+ with NVIDIA runtime
+- NVIDIA Container Toolkit installed
 
 ---
 
-## Performance Tuning
-
-### Optimize Ollama
-
-```bash
-# Use GPU if available
-CUDA_VISIBLE_DEVICES=0 ollama serve
-
-# Increase context window (uses more RAM)
-OLLAMA_CONTEXT_SIZE=4096 ollama serve
-
-# Adjust num_predict for latency
-# In code: num_predict=128 (shorter responses)
-```
-
-### Optimize Node.js
-
-```bash
-# Increase file descriptors
-ulimit -n 65536
-
-# Node clustering
-cluster.fork() for each CPU core
-
-# Run with production flag
-NODE_ENV=production node dist/index.js
-```
-
-### Optimize Network
-
-- Use HTTP/2 or HTTP/3
-- Enable gzip compression
-- Cache responses when possible
-- Use CDN for static content
-
----
-
-## Backup & Disaster Recovery
-
-### Backup Ollama Models
-
-```bash
-# Backup models directory
-tar -czf ollama-models-backup.tar.gz ~/.ollama/models
-
-# Restore
-tar -xzf ollama-models-backup.tar.gz -C ~/.ollama/
-
-# Or pull models programmatically
-curl http://localhost:11434/api/pull -d '{"name": "qwen2.5:7b"}'
-```
+## Maintenance
 
 ### Database Backups
 
+**Manual backup:**
 ```bash
-# SQLite (if using)
-cp backend/data/agentshield.db backups/agentshield-$(date +%s).db
-
-# PostgreSQL (if migrating)
-pg_dump agentshield | gzip > backup-$(date +%Y%m%d).sql.gz
+docker-compose -f docker-compose.prod.yml exec postgres pg_dump \
+  -U agentshield_prod \
+  -d agentshield > backup_$(date +%Y%m%d_%H%M%S).sql
 ```
 
-### High Availability Setup
-
+**Restore:**
+```bash
+docker-compose -f docker-compose.prod.yml exec postgres psql \
+  -U agentshield_prod \
+  -d agentshield < backup_20240101_120000.sql
 ```
-        ┌─────────────────┐
-        │   Load Balancer │
-        └────────┬────────┘
-                 │
-    ┌────────────┼────────────┐
-    │            │            │
-    ▼            ▼            ▼
-┌───────┐  ┌───────┐  ┌───────┐
-│Backend│  │Backend│  │Backend│
-└───┬───┘  └───┬───┘  └───┬───┘
-    │         │         │
-    │    ┌────┼────┐    │
-    └────┤ Shared  ├────┘
-         │Database │
-         └─────────┘
-              │
-    ┌─────────┴──────────┐
-    │                    │
-    ▼                    ▼
-┌─────────────┐   ┌─────────────┐
-│LLM Service 1│   │LLM Service 2│
-└─────────────┘   └─────────────┘
+
+**Automated backups (cron):**
+```bash
+# Add to crontab: 0 2 * * * /path/to/backup.sh
+cat > /path/to/backup.sh << 'EOF'
+#!/bin/bash
+docker-compose -f docker-compose.prod.yml exec postgres pg_dump \
+  -U agentshield_prod \
+  -d agentshield > /backups/backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql
+find /backups -type f -mtime +30 -delete  # Keep 30 days
+EOF
+chmod +x /path/to/backup.sh
+```
+
+### Log Rotation
+
+Configure logrotate for nginx logs:
+```bash
+cat > /etc/logrotate.d/agentshield << 'EOF'
+/var/lib/docker/volumes/*_nginx-logs/_data/agentshield_*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 www-data www-data
+    sharedscripts
+    postrotate
+        docker-compose -f docker-compose.prod.yml exec nginx nginx -s reload
+    endscript
+}
+EOF
+```
+
+### Certificate Renewal
+
+**Manual renewal (Let's Encrypt):**
+```bash
+docker run --rm -v ./nginx/ssl:/etc/letsencrypt \
+  -v ./nginx/.well-known:/var/www/certbot \
+  certbot/certbot renew
+```
+
+**Automated renewal (cron):**
+```bash
+# Add to crontab: 0 3 * * * /path/to/renew-cert.sh
+cat > /path/to/renew-cert.sh << 'EOF'
+#!/bin/bash
+cd /path/to/agentshield
+docker run --rm -v ./nginx/ssl:/etc/letsencrypt \
+  -v ./nginx/.well-known:/var/www/certbot \
+  certbot/certbot renew
+docker-compose -f docker-compose.prod.yml exec nginx nginx -s reload
+EOF
+chmod +x /path/to/renew-cert.sh
 ```
 
 ---
 
-## Security Hardening
+## Troubleshooting
 
-### Network Security
-
+### Backend won't start: "Database not initialized"
 ```bash
-# Only expose necessary ports
-- 5000: Backend (behind firewall/VPN)
-- 8000: LLM API (behind firewall)
-- 11434: Ollama (only localhost)
+# Wait for PostgreSQL to be ready
+docker-compose -f docker-compose.prod.yml exec postgres pg_isready
 
-# Use HTTPS
-# Add reverse proxy (Nginx) with SSL certificates
+# Check if migrations ran
+docker-compose -f docker-compose.prod.yml exec postgres psql \
+  -U agentshield_prod -d agentshield -c "SELECT version FROM schema_version"
 ```
 
-### Application Security
-
+### LLM service returns 503
 ```bash
-# Environment variables
-export JWT_SECRET=$(openssl rand -hex 32)
-export API_KEY=$(openssl rand -hex 16)
+# Check Ollama is running and has model
+docker-compose -f docker-compose.prod.yml exec ollama ollama list
 
-# Disable debug mode in production
-NODE_ENV=production
-
-# Enable security headers
-helmet()
-
-# Rate limiting
-rateLimit()
+# Pull model if missing
+docker-compose -f docker-compose.prod.yml exec ollama ollama pull qwen2.5:7b
 ```
 
-### Database Security
-
+### Nginx "502 Bad Gateway"
 ```bash
-# Change default credentials
-# Enable authentication
-# Use strong passwords
-# Regular backups
-# Encrypt sensitive data
+# Check if backend services are healthy
+docker-compose -f docker-compose.prod.yml ps
+
+# Check nginx error log
+docker-compose -f docker-compose.prod.yml exec nginx cat /var/log/nginx/agentshield_error.log
+
+# Restart nginx
+docker-compose -f docker-compose.prod.yml restart nginx
+```
+
+### Out of memory errors
+```bash
+# Check resource usage
+docker stats
+
+# Increase docker memory limit (in Docker Desktop settings or daemon.json)
+# Then restart containers
+docker-compose -f docker-compose.prod.yml down
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ---
 
-## Troubleshooting Deployment
+## Security Best Practices
 
-| Issue | Solution |
-|-------|----------|
-| Services can't connect | Check firewall, verify service addresses |
-| High memory usage | Reduce Ollama context size or model size |
-| High latency | Use smaller model, add caching, check network |
-| OOM errors | Allocate more memory, use smaller model |
-| Model not available | Pull model: `ollama pull qwen2.5:7b` |
-| Port conflicts | Change ports in env files |
-| SSL errors | Update certificates, check expiry |
+✅ **Implemented:**
+- [x] Non-root users in all containers
+- [x] Health checks on all services
+- [x] SSL/TLS termination in nginx
+- [x] HSTS, X-Frame-Options, CSP headers
+- [x] Rate limiting (100 req/min by default)
+- [x] JWT authentication on protected routes
+- [x] Basic auth on metrics endpoints
 
----
+⚠️ **To Configure:**
+- [ ] Adjust `CORS_ORIGIN` for your domain in nginx config
+- [ ] Change default JWT secrets (MUST before production)
+- [ ] Enable backup encryption (`gpg -c backup.sql`)
+- [ ] Use a secrets manager (HashiCorp Vault, AWS Secrets Manager)
+- [ ] Enable audit logging for all admin operations
+- [ ] Implement WAF rules in nginx (optional, using ModSecurity)
 
-## Post-Deployment
+### Secrets Management
 
-1. **Verify all services are healthy**
-   ```bash
-   curl http://localhost:5000/health
-   curl http://localhost:8000/health
-   ```
+**Do NOT commit secrets to git:**
+```bash
+# Create .env.production (add to .gitignore)
+echo ".env.production" >> .gitignore
+echo "nginx/.htpasswd" >> .gitignore
 
-2. **Run e2e tests**
-   ```bash
-   npx ts-node e2e-test.ts
-   ```
+# Load before deployment
+set -a
+source .env.production
+set +a
+```
 
-3. **Monitor for 24 hours**
-   - Check logs for errors
-   - Monitor resource usage
-   - Verify decision quality
-
-4. **Collect baseline metrics**
-   - Average response time
-   - Decision distribution
-   - Error rate
-   - LLM availability
-
-5. **Document production config**
-   - Record chosen thresholds
-   - Note performance characteristics
-   - Document emergency procedures
+**Use Docker secrets for swarm mode:**
+```bash
+docker secret create db_password -
+# Enter password, press Ctrl+D
+```
 
 ---
 
-Good luck with your deployment! 🚀
+## Rolling Updates
+
+Zero-downtime updates with load balancing:
+
+```bash
+# Update backend code
+git pull origin main
+
+# Rebuild images
+docker-compose -f docker-compose.prod.yml build backend
+
+# Restart one backend at a time
+docker-compose -f docker-compose.prod.yml up -d backend-1
+sleep 10  # Wait for health check
+docker-compose -f docker-compose.prod.yml up -d backend-2
+sleep 10
+docker-compose -f docker-compose.prod.yml up -d backend-3
+
+# Verify no errors
+docker-compose -f docker-compose.prod.yml logs | grep -i error
+```
+
+---
+
+## Disaster Recovery
+
+### Backup Strategy
+- **Daily:** Automated PostgreSQL dumps to `/backups`
+- **Weekly:** Full system snapshot (via cloud provider)
+- **Monthly:** Off-site backup (S3, GCS, etc.)
+
+### Recovery Procedure
+```bash
+# 1. Stop application
+docker-compose -f docker-compose.prod.yml down
+
+# 2. Restore database
+docker run --rm -v agentshield_postgres-data:/data \
+  -v ./backup.sql:/backup.sql \
+  postgres:15-alpine \
+  psql -U agentshield_prod -d agentshield < /backup.sql
+
+# 3. Start application
+docker-compose -f docker-compose.prod.yml up -d
+
+# 4. Verify
+curl -k https://localhost/health
+```
+
+---
+
+## Support & Resources
+
+- **Documentation:** See `README.md` and `ARCHITECTURE_ALIGNMENT.md`
+- **Issues:** Report to GitHub issues
+- **Security:** Report vulnerabilities to security@agentshield.local
+
+---
+
+**Last Updated:** October 6, 2026  
+**Version:** 1.0.0

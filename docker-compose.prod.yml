@@ -6,16 +6,18 @@ version: '3.8'
 services:
   # Nginx API Gateway / Reverse Proxy
   nginx:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     container_name: agentshield-nginx
     ports:
       - "80:80"
       - "443:443"
-      - "9090:9090"
     volumes:
-      - ./nginx/agentshield.conf:/etc/nginx/sites-enabled/default
       - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
     environment:
       - TZ=UTC
     depends_on:
@@ -176,8 +178,6 @@ services:
       context: .
       dockerfile: llm/Dockerfile
     container_name: agentshield-llm-api
-    ports:
-      - "8000:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_MODEL=qwen2.5:7b
@@ -187,7 +187,8 @@ services:
       - LLM_API_PORT=8000
       - LOG_LEVEL=info
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     volumes:
       - ./llm/logs:/app/logs
     networks:
@@ -197,6 +198,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
+      start-period: 15s
       retries: 3
 
   # Prometheus Monitoring
@@ -267,6 +269,7 @@ services:
 volumes:
   ollama-data:
   nginx-cache:
+  nginx-logs:
   prometheus-data:
   grafana-data:
   postgres-data:

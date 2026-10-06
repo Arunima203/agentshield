@@ -188,7 +188,12 @@ function Overview() {
       setStats(s)
       setEvents(e.entries)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Backend unreachable')
+      const msg = err instanceof Error ? err.message : 'Backend unreachable'
+      if (msg.includes('expired') || msg.includes('401')) {
+        window.location.href = '/login'
+        return
+      }
+      setError(msg)
     } finally {
       setLoading(false)
     }

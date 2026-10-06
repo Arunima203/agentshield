@@ -4,13 +4,14 @@ import helmet from "helmet";
 import morgan from "morgan";
 import "express-async-errors";
 
+import { apiKeyAuth } from "./middleware/auth";
 import { jwtAuth } from "./middleware/jwtAuth";
 import { errorHandler } from "./middleware/errorHandler";
+import authRoutes from "./routes/auth";
 import inspectRoutes from "./routes/inspect";
 import approvalsRoutes from "./routes/approvals";
 import auditRoutes from "./routes/audit";
 import configRoutes from "./routes/config";
-import authRoutes from "./routes/auth";
 
 export function createApp(): express.Application {
   const app = express();
@@ -51,7 +52,7 @@ export function createApp(): express.Application {
     });
   });
 
-  // ── Authentication routes (no JWT needed, uses credentials) ───────────────
+  // ── Auth routes (no auth needed) ─────────────────────────────────────────
   app.use("/auth", authRoutes);
 
   // ── JWT auth for all protected routes ────────────────────────────────────

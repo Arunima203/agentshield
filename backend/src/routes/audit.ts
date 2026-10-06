@@ -1,25 +1,21 @@
 import { Router, Request, Response } from "express";
 import { queryAuditLog, getAuditStats, pruneOldEntries } from "../auditLogger";
-import { getConfig } from "../config";
 
 const router = Router();
 
 /**
  * GET /audit
- * Query params: tool, decision, agentId, since, limit
+ * Query params: tool, decision, agentId, since, limit, offset
  */
 router.get("/", async (req: Request, res: Response) => {
-  const startTime = req.query.since as string | undefined;
-  const endTime = new Date().toISOString();
-  const limit = req.query.limit ? Math.min(Number(req.query.limit), 500) : 100;
-
-  const entries = await queryAuditLog(
-    req.query.agentId as string | undefined,
-    startTime,
-    endTime,
-    limit
-  );
-
+  const entries = await queryAuditLog({
+    tool:     req.query.tool     as string | undefined,
+    decision: req.query.decision as string | undefined,
+    agentId:  req.query.agentId  as string | undefined,
+    since:    req.query.since    as string | undefined,
+    limit:  req.query.limit  ? Math.min(Number(req.query.limit), 500) : 50,
+    offset: req.query.offset ? Number(req.query.offset) : 0,
+  });
   res.json({ count: entries.length, entries });
 });
 
@@ -27,11 +23,7 @@ router.get("/", async (req: Request, res: Response) => {
  * GET /audit/stats
  */
 router.get("/stats", async (_req: Request, res: Response) => {
-  // Last 24 hours
-  const endTime = new Date().toISOString();
-  const startTime = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
-  const stats = await getAuditStats(startTime, endTime);
+  const stats = await getAuditStats();
   res.json(stats);
 });
 
@@ -39,10 +31,8 @@ router.get("/stats", async (_req: Request, res: Response) => {
  * DELETE /audit/prune
  */
 router.delete("/prune", async (_req: Request, res: Response) => {
-  const config = getConfig();
-  const retentionDays = config.audit.retention_days || 90;
-  const deleted = await pruneOldEntries(retentionDays);
-  res.json({ message: `Pruned ${deleted} entries older than ${retentionDays} days` });
+  const deleted = await pruneOldEntries();
+  res.json({ message: `Pruned ${deleted} entries` });
 });
 
 export default router;

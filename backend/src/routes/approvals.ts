@@ -4,17 +4,15 @@ import {
   getApprovalRequest,
   resolveApproval,
 } from "../approvalGate";
-import { AuthenticatedRequest, requireRole } from "../middleware/jwtAuth";
 import type { ApprovalStatus } from "../types";
 
 const router = Router();
-const approvalAccess = requireRole("admin", "approver");
 
 /**
  * GET /approvals
  * List approval requests. Optional ?status=pending|approved|rejected|timeout
  */
-router.get("/", approvalAccess, async (_req: Request, res: Response) => {
+router.get("/", async (_req: Request, res: Response) => {
   const status = _req.query.status as ApprovalStatus | undefined;
   const limit = Math.min(Number(_req.query.limit ?? 50), 200);
   const requests = await listApprovalRequests(status, limit);
@@ -24,7 +22,7 @@ router.get("/", approvalAccess, async (_req: Request, res: Response) => {
 /**
  * GET /approvals/:id
  */
-router.get("/:id", approvalAccess, async (req: Request, res: Response) => {
+router.get("/:id", async (req: Request, res: Response) => {
   const request = await getApprovalRequest(req.params.id);
   if (!request) {
     res.status(404).json({ error: "Approval request not found" });
@@ -35,12 +33,16 @@ router.get("/:id", approvalAccess, async (req: Request, res: Response) => {
 
 /**
  * POST /approvals/:id/approve
- * The approver identity is taken from the authenticated token.
+ * Body: { resolvedBy: string }
  */
-router.post("/:id/approve", approvalAccess, async (req: Request, res: Response) => {
+router.post("/:id/approve", async (req: Request, res: Response) => {
+  const { resolvedBy } = req.body as { resolvedBy?: string };
+  if (!resolvedBy) {
+    res.status(400).json({ error: '"resolvedBy" is required' });
+    return;
+  }
   try {
-    const approver = (req as AuthenticatedRequest).user!;
-    const updated = await resolveApproval({ requestId: req.params.id, approved: true, resolvedBy: approver.email });
+    const updated = await resolveApproval({ requestId: req.params.id, approved: true, resolvedBy });
     res.json({ message: "Approved", request: updated });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
@@ -49,16 +51,22 @@ router.post("/:id/approve", approvalAccess, async (req: Request, res: Response) 
 
 /**
  * POST /approvals/:id/reject
- * Body: { rejectionReason?: string }
+ * Body: { resolvedBy: string, rejectionReason?: string }
  */
-router.post("/:id/reject", approvalAccess, async (req: Request, res: Response) => {
-  const { rejectionReason } = req.body as { rejectionReason?: string };
+router.post("/:id/reject", async (req: Request, res: Response) => {
+  const { resolvedBy, rejectionReason } = req.body as {
+    resolvedBy?: string;
+    rejectionReason?: string;
+  };
+  if (!resolvedBy) {
+    res.status(400).json({ error: '"resolvedBy" is required' });
+    return;
+  }
   try {
-    const approver = (req as AuthenticatedRequest).user!;
     const updated = await resolveApproval({
       requestId: req.params.id,
       approved: false,
-      resolvedBy: approver.email,
+      resolvedBy,
       rejectionReason,
     });
     res.json({ message: "Rejected", request: updated });

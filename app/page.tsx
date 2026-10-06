@@ -63,6 +63,13 @@ function Logo() {
 function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
   const { username, logout } = useAuth()
   const router = useRouter()
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [notifications] = useState([
+    { id: 1, type: 'warn',    text: '4 approvals pending review',       time: 'Just now' },
+    { id: 2, type: 'danger',  text: 'High risk tool call blocked',       time: '2 min ago' },
+    { id: 3, type: 'success', text: 'DevAgent inspection passed',        time: '5 min ago' },
+    { id: 4, type: 'warn',    text: 'Secret detected and redacted',      time: '12 min ago' },
+  ])
 
   const handleLogout = () => {
     logout()
@@ -71,18 +78,66 @@ function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => voi
   }
 
   return (
-    <header className="topbar">
+    <header className="topbar" style={{ position: 'relative' }}>
       <Logo />
       <div className="topbar-meta">
         <span className="env">LOCAL <b>/</b> DEVELOPMENT</span>
         <span className="system"><i /> SYSTEM OPERATIONAL</span>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3" style={{ position: 'relative' }}>
           {username && (
             <span className="text-sm px-3 py-1 bg-blue-600/20 text-blue-300 rounded border border-blue-500/30">
               {username}
             </span>
           )}
-          <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
+
+          {/* Notification Bell */}
+          <div style={{ position: 'relative' }}>
+            <button
+              className="icon-button"
+              aria-label="Notifications"
+              onClick={() => setShowNotifications(v => !v)}
+              style={{ position: 'relative' }}
+            >
+              <Bell size={17} />
+              {notifications.length > 0 && (
+                <span style={{
+                  position: 'absolute', top: -4, right: -4,
+                  background: '#ef4444', borderRadius: '50%',
+                  width: 14, height: 14, fontSize: 9,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: 'white', fontWeight: 700,
+                }}>{notifications.length}</span>
+              )}
+            </button>
+
+            {/* Notification Panel */}
+            {showNotifications && (
+              <div style={{
+                position: 'absolute', top: '110%', right: 0, zIndex: 1000,
+                background: '#0f172a', border: '1px solid #1e293b',
+                borderRadius: 10, width: 300, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+              }}>
+                <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Notifications</span>
+                  <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><X size={14} /></button>
+                </div>
+                {notifications.map(n => (
+                  <div key={n.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #0f172a', display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 4, flexShrink: 0, background: n.type === 'danger' ? '#ef4444' : n.type === 'warn' ? '#f59e0b' : '#22c55e' }} />
+                    <div style={{ flex: 1 }}>
+                      <p style={{ margin: 0, fontSize: '0.8rem', color: '#e2e8f0' }}>{n.text}</p>
+                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>{n.time}</span>
+                    </div>
+                  </div>
+                ))}
+                <div style={{ padding: '0.5rem 1rem', textAlign: 'center' }}>
+                  <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#3b82f6', fontSize: '0.8rem', cursor: 'pointer' }}>Mark all as read</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Logout */}
           <button
             className="icon-button"
             aria-label="Logout"

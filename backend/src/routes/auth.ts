@@ -11,7 +11,7 @@ const DEMO_USERS: Record<string, { password: string; role: string; name: string 
 // Simple token — just base64 encoded username:role (no real JWT needed for demo)
 function makeToken(username: string, role: string): string {
   const payload = Buffer.from(JSON.stringify({
-    sub: username, role, iat: Date.now(), exp: Date.now() + 24 * 60 * 60 * 1000
+    sub: username, role, iat: Date.now(), exp: Date.now() + 30 * 24 * 60 * 60 * 1000  // 30 days
   })).toString("base64");
   return `demo.${payload}.signature`;
 }

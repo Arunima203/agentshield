@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   AlertTriangle, Bell, Check, ChevronRight, CircleDot,
   Clock3, FileWarning, Menu, ShieldCheck, Terminal, X,
@@ -61,10 +62,12 @@ function Logo() {
 
 function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
   const { username, logout } = useAuth()
-  
+  const router = useRouter()
+
   const handleLogout = () => {
     logout()
-    window.location.href = '/login'
+    localStorage.removeItem('agentshield_auth')
+    router.push('/login')
   }
 
   return (
@@ -80,16 +83,15 @@ function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => voi
             </span>
           )}
           <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
-          {username && (
-            <button 
-              className="icon-button hover:text-red-400" 
-              aria-label="Logout"
-              onClick={handleLogout}
-              title="Logout"
-            >
-              <LogOut size={17} />
-            </button>
-          )}
+          <button
+            className="icon-button"
+            aria-label="Logout"
+            onClick={handleLogout}
+            title="Logout"
+            style={{ color: '#f87171' }}
+          >
+            <LogOut size={17} />
+          </button>
         </div>
       </div>
       <button className="menu-button" onClick={() => setOpen(!open)} aria-label={open ? 'Close navigation' : 'Open navigation'}>

@@ -1,0 +1,351 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentshield
+  labels:
+    name: agentshield
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentshield-config
+  namespace: agentshield
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  APPROVAL_MODE: "auto"
+  ENABLE_LLM: "true"
+  OLLAMA_BASE_URL: "http://ollama-service:11434"
+  OLLAMA_MODEL: "qwen2.5:7b"
+  OLLAMA_TIMEOUT: "60"
+  LLM_TEMPERATURE: "0"
+  LLM_API_HOST: "0.0.0.0"
+  LLM_API_PORT: "8000"
+
+---
+# Secret for sensitive data
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agentshield-secrets
+  namespace: agentshield
+type: Opaque
+stringData:
+  JWT_SECRET: "your-secret-key-change-in-production"
+  DB_PASSWORD: "your-db-password"
+
+---
+# PersistentVolume for Ollama models
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ollama-pv
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /data/ollama
+
+---
+# PersistentVolumeClaim for Ollama
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-pvc
+  namespace: agentshield
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# Ollama Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  namespace: agentshield
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: api
+      port: 11434
+      targetPort: 11434
+  type: ClusterIP
+
+---
+# Ollama Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: agentshield
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: gpu
+                    operator: In
+                    values: ["true"]
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              memory: "8Gi"
+              cpu: "4"
+            requests:
+              memory: "6Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: ollama-storage
+              mountPath: /root/.ollama
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: ollama-storage
+          persistentVolumeClaim:
+            claimName: ollama-pvc
+
+---
+# LLM Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-api-service
+  namespace: agentshield
+spec:
+  selector:
+    app: llm-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# LLM API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-api
+  namespace: agentshield
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm-api
+  template:
+    metadata:
+      labels:
+        app: llm-api
+    spec:
+      containers:
+        - name: llm-api
+          image: agentshield/llm-api:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: agentshield-config
+          resources:
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+            requests:
+              memory: "1Gi"
+              cpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 5
+
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: agentshield
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+  type: LoadBalancer
+
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: agentshield
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: agentshield/backend:latest
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: agentshield-config
+            - secretRef:
+                name: agentshield-secrets
+          env:
+            - name: LLM_API_URL
+              value: "http://llm-api-service:8000"
+          resources:
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+      volumes:
+        - name: data
+          emptyDir: {}
+
+---
+# HorizontalPodAutoscaler for Backend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: agentshield
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Prometheus ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: agentshield-monitoring
+  namespace: agentshield
+spec:
+  selector:
+    matchLabels:
+      app: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+
+---
+# Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentshield-network-policy
+  namespace: agentshield
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: agentshield
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: agentshield
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53

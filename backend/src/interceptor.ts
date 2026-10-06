@@ -197,13 +197,19 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
   // ── Step 7: Approval request ──────────────────────────────────────────────
   let approvalRequestId: string | undefined;
 
+  // Create a sanitized copy of the tool call for storage (secrets removed)
+  const sanitizedToolCall: ToolCall = {
+    ...toolCall,
+    args: sanitizedArgs as Record<string, unknown>,
+  };
+
   if (decision === "require_approval") {
-    const approvalReq = await createApprovalRequest(toolCall, inspection);
+    const approvalReq = await createApprovalRequest(sanitizedToolCall, inspection);
     approvalRequestId = approvalReq.id;
     logger.info(CTX, `Approval required — request id=${approvalRequestId} for tool="${toolCall.tool}"`);
   } else {
     // Still persist an already-resolved approval record for full audit trail
-    const rec = await createApprovalRequest(toolCall, inspection);
+    const rec = await createApprovalRequest(sanitizedToolCall, inspection);
     if (decision === "allow") {
       await autoApprove(rec.id, toolCall.id);
     } else {

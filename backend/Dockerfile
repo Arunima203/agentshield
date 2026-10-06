@@ -6,9 +6,8 @@ WORKDIR /app
 # Copy package files
 COPY backend/package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
+# Install ALL dependencies (including devDependencies for build tools like tsc)
+RUN npm ci
 
 # Copy source code
 COPY backend/src ./src
@@ -30,11 +29,16 @@ RUN apk add --no-cache dumb-init
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
 
+# Copy package files first
+COPY backend/package*.json ./
+
+# Install production dependencies only
+RUN npm ci --only=production && \
+    npm cache clean --force
+
 # Copy built application from builder
 COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
-COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nodejs:nodejs /app/agentshield.config.yaml ./agentshield.config.yaml
-COPY --from=builder --chown=nodejs:nodejs /app/package.json ./package.json
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown nodejs:nodejs /app/logs

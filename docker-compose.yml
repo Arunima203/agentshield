@@ -27,8 +27,7 @@ services:
 
   # Backend Node.js Service
   backend:
-    build:
-      context: ./backend
+    build:`n      context: .`n      dockerfile: backend/Dockerfile
       dockerfile: Dockerfile
     container_name: agentshield-backend-dev
     ports:
@@ -42,7 +41,7 @@ services:
       DB_USER: agentshield
       DB_PASSWORD: agentshield_password
       DB_POOL_SIZE: 5
-      LLM_SERVICE_URL: http://llm-api:8000
+      LLM_API_URL: http://llm-api:8000
       ENABLE_LLM: "true"
       APPROVAL_MODE: auto
       LOG_LEVEL: debug
@@ -122,3 +121,4 @@ volumes:
 networks:
   agentshield:
     driver: bridge
+

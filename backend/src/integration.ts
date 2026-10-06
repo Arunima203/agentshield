@@ -12,9 +12,9 @@ import cors from 'cors';
 import { logger } from './logger';
 import { healthChecker } from './healthCheck';
 import { getMetrics, getMetricsContentType, updateSystemHealth, recordInspection } from './monitoring';
-import { authenticate, authorize, requireRole, auditLog, requestLoggingMiddleware } from './middleware/authorization';
+import { authenticate, authorize, requireRole, auditLog } from './middleware/authorization';
 import { inspect } from './interceptor';
-import { tracingService, structuredLogger, requestLoggingMiddleware as tracingMiddleware } from './tracing';
+import { tracingService, structuredLogger, requestLoggingMiddleware } from './tracing';
 import { backupManager, scheduleBackups } from './backup';
 import { getLLMService } from './llmService';
 
@@ -81,7 +81,7 @@ class SystemIntegration {
 
     // Tracing middleware (before other middleware)
     if (this.config.enableTracing) {
-      this.app.use(tracingMiddleware);
+      this.app.use(requestLoggingMiddleware);
     }
 
     // Request logging
@@ -298,6 +298,7 @@ class SystemIntegration {
 
       recordInspection(
         result.decision,
+        req.body?.tool || 'unknown',
         result.riskScore,
         result.riskScore, // simplified
         result.llmAnalysis?.risk_score || null,

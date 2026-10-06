@@ -64,12 +64,13 @@ export function verifyToken(token: string): AuthenticatedRequest['user'] | null 
   try {
     const secret = process.env.JWT_SECRET || 'your-secret-key';
     const decoded = jwt.verify(token, secret) as any;
+    const role: UserRole = (decoded.role || 'guest') as UserRole;
     
     return {
       id: decoded.sub || decoded.userId || decoded.id,
       email: decoded.email,
-      role: decoded.role || 'guest',
-      permissions: rolePermissions[decoded.role] || rolePermissions.guest,
+      role,
+      permissions: rolePermissions[role] || rolePermissions.guest,
     };
   } catch (error) {
     logger.warn(CTX, `Token verification failed: ${error instanceof Error ? error.message : String(error)}`);

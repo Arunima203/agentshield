@@ -150,16 +150,21 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
     approvalStatus = "pending";
   } else {
     // Auto mode — use combined risk score thresholds
-    if (finalScore >= config.risk.block_threshold) {
-      decision = "block";
-      approvalStatus = "auto_blocked";
-    } else if (
-      finalScore >= config.risk.review_threshold ||
-      riskAssessment.requireApproval
+    // CRITICAL: Check requireApproval BEFORE block threshold
+    // This allows high-risk tools (90, 85) to reach human approval instead of auto-blocking
+    if (
+      riskAssessment.requireApproval ||
+      finalScore >= config.risk.review_threshold
     ) {
+      // Tool marked for approval OR score between review and block thresholds
       decision = "require_approval";
       approvalStatus = "pending";
+    } else if (finalScore >= config.risk.block_threshold) {
+      // Score exceeds block threshold AND not marked for approval
+      decision = "block";
+      approvalStatus = "auto_blocked";
     } else {
+      // Low risk
       decision = "allow";
       approvalStatus = "auto_approved";
     }

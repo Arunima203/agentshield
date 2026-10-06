@@ -215,8 +215,8 @@ export function recordLLMConfidence(confidence: number): void {
 /**
  * Get all metrics in Prometheus format
  */
-export function getMetrics(): string {
-  return prometheus.register.metrics();
+export async function getMetrics(): Promise<string> {
+  return await prometheus.register.metrics();
 }
 
 /**

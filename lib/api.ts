@@ -1,28 +1,32 @@
 /**
  * AgentShield API Client
  * Central utility for all frontend → backend communication.
+ * Uses JWT tokens from auth context.
  */
 
+import { useAuth } from '@/app/contexts/auth'
+
 const BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002";
 
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY ?? "";
-
-function headers(): HeadersInit {
+function headers(token?: string): HeadersInit {
   const h: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (API_KEY) h["X-Api-Key"] = API_KEY;
+  if (token) {
+    h["Authorization"] = `Bearer ${token}`;
+  }
   return h;
 }
 
 async function request<T>(
   path: string,
+  token?: string,
   options: RequestInit = {}
 ): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
-    headers: { ...headers(), ...(options.headers ?? {}) },
+    headers: { ...headers(token), ...(options.headers ?? {}) },
   });
 
   if (!res.ok) {
@@ -112,13 +116,16 @@ export async function getHealth(): Promise<{ status: string; service: string }> 
 
 // ─── Inspect ──────────────────────────────────────────────────────────────────
 
-export async function inspectToolCall(payload: {
-  tool: string;
-  args: Record<string, unknown>;
-  agentId?: string;
-  sessionId?: string;
-}): Promise<InspectResponse> {
-  return request("/inspect", {
+export async function inspectToolCall(
+  payload: {
+    tool: string;
+    args: Record<string, unknown>;
+    agentId?: string;
+    sessionId?: string;
+  },
+  token: string
+): Promise<InspectResponse> {
+  return request("/inspect", token, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -127,19 +134,21 @@ export async function inspectToolCall(payload: {
 // ─── Approvals ────────────────────────────────────────────────────────────────
 
 export async function getApprovals(
+  token: string,
   status?: ApprovalStatus,
   limit = 50
 ): Promise<{ count: number; requests: ApprovalRequest[] }> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (status) params.set("status", status);
-  return request(`/approvals?${params}`);
+  return request(`/approvals?${params}`, token);
 }
 
 export async function approveRequest(
   id: string,
+  token: string,
   resolvedBy = "operator"
 ): Promise<{ message: string; request: ApprovalRequest }> {
-  return request(`/approvals/${id}/approve`, {
+  return request(`/approvals/${id}/approve`, token, {
     method: "POST",
     body: JSON.stringify({ resolvedBy }),
   });
@@ -147,10 +156,11 @@ export async function approveRequest(
 
 export async function rejectRequest(
   id: string,
+  token: string,
   resolvedBy = "operator",
   rejectionReason?: string
 ): Promise<{ message: string; request: ApprovalRequest }> {
-  return request(`/approvals/${id}/reject`, {
+  return request(`/approvals/${id}/reject`, token, {
     method: "POST",
     body: JSON.stringify({ resolvedBy, rejectionReason }),
   });
@@ -158,13 +168,16 @@ export async function rejectRequest(
 
 // ─── Audit ────────────────────────────────────────────────────────────────────
 
-export async function getAuditLog(opts?: {
-  tool?: string;
-  decision?: string;
-  since?: string;
-  limit?: number;
-  offset?: number;
-}): Promise<{ count: number; entries: AuditEntry[] }> {
+export async function getAuditLog(
+  token: string,
+  opts?: {
+    tool?: string;
+    decision?: string;
+    since?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{ count: number; entries: AuditEntry[] }> {
   const params = new URLSearchParams();
   if (opts?.tool) params.set("tool", opts.tool);
   if (opts?.decision) params.set("decision", opts.decision);
@@ -172,9 +185,9 @@ export async function getAuditLog(opts?: {
   if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.offset) params.set("offset", String(opts.offset));
   const qs = params.toString();
-  return request(`/audit${qs ? `?${qs}` : ""}`);
+  return request(`/audit${qs ? `?${qs}` : ""}`, token);
 }
 
-export async function getAuditStats(): Promise<AuditStats> {
-  return request("/audit/stats");
+export async function getAuditStats(token: string): Promise<AuditStats> {
+  return request("/audit/stats", token);
 }

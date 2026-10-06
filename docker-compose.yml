@@ -1,0 +1,124 @@
+version: '3.8'
+
+# AgentShield Development Docker Compose
+# Quick local setup: PostgreSQL, Backend, LLM Service
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: agentshield-postgres-dev
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: agentshield
+      POSTGRES_USER: agentshield
+      POSTGRES_PASSWORD: agentshield_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - agentshield
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentshield"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend Node.js Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agentshield-backend-dev
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: agentshield
+      DB_USER: agentshield
+      DB_PASSWORD: agentshield_password
+      DB_POOL_SIZE: 5
+      LLM_SERVICE_URL: http://llm-api:8000
+      ENABLE_LLM: "true"
+      APPROVAL_MODE: auto
+      LOG_LEVEL: debug
+      JWT_ACCESS_SECRET: dev-access-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/agentshield.config.yaml:/app/agentshield.config.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - agentshield
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FastAPI LLM Service (optional)
+  llm-api:
+    build:
+      context: ./llm
+      dockerfile: Dockerfile
+    container_name: agentshield-llm-dev
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:7b
+      OLLAMA_TIMEOUT: 60
+      LLM_TEMPERATURE: 0
+      LLM_API_HOST: 0.0.0.0
+      LLM_API_PORT: 8000
+      LOG_LEVEL: info
+    depends_on:
+      - ollama
+    volumes:
+      - ./llm/logs:/app/logs
+    networks:
+      - agentshield
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - llm
+
+  # Ollama LLM Runtime (optional)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agentshield-ollama-dev
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      OLLAMA_MODELS: /root/.ollama/models
+    networks:
+      - agentshield
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - llm
+
+volumes:
+  postgres-data:
+  ollama-data:
+
+networks:
+  agentshield:
+    driver: bridge

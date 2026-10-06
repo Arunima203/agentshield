@@ -4,11 +4,13 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   AlertTriangle, Bell, Check, ChevronRight, CircleDot,
   Clock3, FileWarning, Menu, ShieldCheck, Terminal, X,
-  Plus, Play, Search, Settings2, RefreshCw, Loader2
+  Plus, Play, Search, Settings2, RefreshCw, Loader2, LogOut
 } from 'lucide-react'
+import { useAuth } from '@/app/contexts/auth'
+import { ProtectedRoute } from '@/app/components/ProtectedRoute'
 import {
   getAuditStats, getAuditLog, getApprovals,
-  approveRequest, rejectRequest,
+  approveRequest, rejectRequest, inspectToolCall,
   type AuditStats, type AuditEntry, type ApprovalRequest
 } from '@/lib/api'
 
@@ -58,13 +60,37 @@ function Logo() {
 }
 
 function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
+  const { username, logout } = useAuth()
+  
+  const handleLogout = () => {
+    logout()
+    window.location.href = '/login'
+  }
+
   return (
     <header className="topbar">
       <Logo />
       <div className="topbar-meta">
         <span className="env">LOCAL <b>/</b> DEVELOPMENT</span>
         <span className="system"><i /> SYSTEM OPERATIONAL</span>
-        <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
+        <div className="flex items-center gap-3">
+          {username && (
+            <span className="text-sm px-3 py-1 bg-blue-600/20 text-blue-300 rounded border border-blue-500/30">
+              {username}
+            </span>
+          )}
+          <button className="icon-button" aria-label="Notifications"><Bell size={17} /></button>
+          {username && (
+            <button 
+              className="icon-button hover:text-red-400" 
+              aria-label="Logout"
+              onClick={handleLogout}
+              title="Logout"
+            >
+              <LogOut size={17} />
+            </button>
+          )}
+        </div>
       </div>
       <button className="menu-button" onClick={() => setOpen(!open)} aria-label={open ? 'Close navigation' : 'Open navigation'}>
         {open ? <X size={22} /> : <Menu size={22} />}
@@ -140,17 +166,23 @@ function Spinner() {
 
 // ─── Overview ─────────────────────────────────────────────────────────────────
 function Overview() {
+  const { accessToken } = useAuth()
   const [stats, setStats] = useState<AuditStats | null>(null)
   const [events, setEvents] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (!accessToken) {
+      setError('Not authenticated')
+      return
+    }
+
     try {
       setError(null)
       const [s, e] = await Promise.all([
-        getAuditStats(),
-        getAuditLog({ limit: 6 }),
+        getAuditStats(accessToken),
+        getAuditLog(accessToken, { limit: 6 }),
       ])
       setStats(s)
       setEvents(e.entries)
@@ -159,7 +191,7 @@ function Overview() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [accessToken])
 
   useEffect(() => { load() }, [load])
 
@@ -259,33 +291,41 @@ function Overview() {
 
 // ─── Approvals ────────────────────────────────────────────────────────────────
 function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
+  const { accessToken } = useAuth()
   const [requests, setRequests] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (!accessToken) {
+      setLoading(false)
+      return
+    }
+
     try {
-      const data = await getApprovals('pending', compact ? 2 : 20)
+      const data = await getApprovals(accessToken, 'pending', compact ? 2 : 20)
       setRequests(data.requests)
     } catch {
       // backend offline — fail silently in compact mode
     } finally {
       setLoading(false)
     }
-  }, [compact])
+  }, [compact, accessToken])
 
   useEffect(() => { load() }, [load])
 
   async function handleApprove(id: string) {
+    if (!accessToken) return
     setActing(id)
-    try { await approveRequest(id); await load() }
+    try { await approveRequest(id, accessToken); await load() }
     catch (e) { alert(e instanceof Error ? e.message : 'Error') }
     finally { setActing(null) }
   }
 
   async function handleReject(id: string) {
+    if (!accessToken) return
     setActing(id)
-    try { await rejectRequest(id, 'operator', 'Denied by operator'); await load() }
+    try { await rejectRequest(id, accessToken, 'operator', 'Denied by operator'); await load() }
     catch (e) { alert(e instanceof Error ? e.message : 'Error') }
     finally { setActing(null) }
   }
@@ -344,18 +384,24 @@ function ApprovalsPage() {
 
 // ─── Live Monitor ─────────────────────────────────────────────────────────────
 function MonitorPage() {
+  const { accessToken } = useAuth()
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('All')
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
+    if (!accessToken) {
+      setError('Not authenticated')
+      return
+    }
+
     try {
       setError(null)
       const decisionMap: Record<string, string> = {
         Allowed: 'allow', Blocked: 'block', Review: 'require_approval',
       }
-      const data = await getAuditLog({
+      const data = await getAuditLog(accessToken, {
         decision: decisionMap[filter],
         limit: 50,
       })
@@ -365,7 +411,7 @@ function MonitorPage() {
     } finally {
       setLoading(false)
     }
-  }, [filter])
+  }, [filter, accessToken])
 
   useEffect(() => { load() }, [load])
 
@@ -485,18 +531,23 @@ function AgentsPage({ setActive }: { setActive: (v: string) => void }) {
 }
 
 function Playground() {
+  const { accessToken } = useAuth()
   const [result, setResult] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
   async function runSim() {
+    if (!accessToken) {
+      setResult('Error: Not authenticated')
+      return
+    }
+
     setLoading(true)
     try {
-      const { inspectToolCall } = await import('@/lib/api')
       const res = await inspectToolCall({
         tool: 'execute_pwsh',
         args: { command: 'rm -rf ./src' },
         agentId: 'DevAgent',
-      })
+      }, accessToken)
       setResult(`Decision: ${res.decision.toUpperCase()} · Score: ${res.riskScore} · ${res.message}`)
     } catch (e) {
       setResult(`Error: ${e instanceof Error ? e.message : 'Backend offline'}`)
@@ -714,5 +765,12 @@ function App() {
   )
 }
 
-export default App
+export default function Page() {
+  return (
+    <ProtectedRoute>
+      <App />
+    </ProtectedRoute>
+  )
+}
+
 export { Terminal }

@@ -49,7 +49,7 @@ npm run dev
 npx ts-node e2e-test.ts
 
 # Or make a request
-curl -X POST http://localhost:5000/inspect \
+curl -X POST http://localhost:3002/inspect \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "execute_pwsh",
@@ -147,7 +147,7 @@ Your Agent
     │
     ▼
 ┌─────────────────┐
-│ Backend :5000   │  Secrets → Deterministic (60%)
+│ Backend :3002   │  Secrets → Deterministic (60%)
 │ - Secrets scan  │           ↓
 │ - Rules         ├──────────→ LLM Analysis (40%)
 │ - LLM call      │           ↓
@@ -229,7 +229,7 @@ LLM_TEMPERATURE=0
 Inspect a tool call and get a security decision.
 
 ```bash
-curl -X POST http://localhost:5000/inspect \
+curl -X POST http://localhost:3002/inspect \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "read_file",
@@ -255,7 +255,7 @@ curl -X POST http://localhost:8000/analyze \
 ### Health Checks
 
 ```bash
-curl http://localhost:5000/health    # Backend
+curl http://localhost:3002/health    # Backend
 curl http://localhost:8000/health    # LLM Service
 ```
 
@@ -425,7 +425,7 @@ npx ts-node e2e-test.ts
 python -m llm.e2e_test
 
 # Manual test
-curl -X POST http://localhost:5000/inspect \
+curl -X POST http://localhost:3002/inspect \
   -H "Content-Type: application/json" \
   -d '{"tool": "...", "args": {...}}'
 ```

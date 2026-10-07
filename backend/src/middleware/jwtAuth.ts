@@ -1,11 +1,8 @@
 import { Request, Response, NextFunction } from "express";
-import { logger } from "../logger";
-
-const CTX = "JwtAuth";
+import { verifyAccessToken } from "../tokenManager";
 
 /**
- * JWT Auth middleware — validates demo tokens issued by our /auth/login.
- * Demo tokens have the format: demo.<base64payload>.signature
+ * Validate access tokens issued by /auth/login.
  */
 export function jwtAuth(req: Request, res: Response, next: NextFunction): void {
   const auth = req.headers.authorization;
@@ -16,37 +13,26 @@ export function jwtAuth(req: Request, res: Response, next: NextFunction): void {
   }
 
   const token = auth.slice(7);
-
-  // Allow demo tokens
-  if (token.startsWith("demo.")) {
-    try {
-      const parts = token.split(".");
-      if (parts.length < 2) throw new Error("bad token");
-      const payload = JSON.parse(Buffer.from(parts[1], "base64").toString());
-
-      // Check expiry
-      if (payload.exp && Date.now() > payload.exp) {
-        res.status(401).json({ error: "Token expired" });
-        return;
-      }
-
-      // Attach user to request
-      (req as any).user = { id: payload.sub, role: payload.role };
-      logger.debug(CTX, `Authenticated user: ${payload.sub} (${payload.role})`);
-      next();
-      return;
-    } catch {
-      res.status(401).json({ error: "Invalid token" });
-      return;
-    }
-  }
-
-  // If no API key set, allow all requests (dev mode)
-  const expectedKey = process.env.AGENTSHIELD_API_KEY;
-  if (!expectedKey || expectedKey === "change-me-to-a-strong-random-key") {
+  const payload = verifyAccessToken(token);
+  if (payload) {
+    (req as any).user = {
+      id: payload.userId,
+      email: payload.email,
+      role: payload.role,
+    };
     next();
     return;
   }
 
-  res.status(401).json({ error: "Unauthorized" });
+  const expectedKey = process.env.AGENTSHIELD_API_KEY;
+  if (
+    expectedKey &&
+    expectedKey !== "change-me-to-a-strong-random-key" &&
+    token === expectedKey
+  ) {
+    next();
+    return;
+  }
+
+  res.status(401).json({ error: "Unauthorized — invalid or expired access token" });
 }

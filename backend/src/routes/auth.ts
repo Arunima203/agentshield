@@ -1,40 +1,56 @@
 import { Router, Request, Response } from "express";
+import bcrypt from "bcrypt";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ErrorFactory } from "../errors/ErrorFactory";
+import { createAuthUser, getAuthUser } from "../auditLogger";
 import {
   createTokenPair,
   verifyAccessToken,
   verifyRefreshToken,
   refreshAccessToken,
 } from "../tokenManager";
-import { logger } from "../logger";
 
 const router = Router();
-const CTX = "Auth";
 
-type AuthUser = {
-  password: string;
-  role: "admin" | "approver" | "auditor" | "agent";
-  name: string;
-  email: string;
-};
+export async function seedDemoUsers(): Promise<void> {
+  const demoUsers = process.env.NODE_ENV === "production"
+    ? (() => {
+        const username = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase();
+        const password = process.env.INITIAL_ADMIN_PASSWORD;
+        if (!username || !/^[a-z0-9._-]{3,32}$/.test(username) ||
+            !password || password.length < 12 || Buffer.byteLength(password, "utf8") > 72) {
+          throw new Error("Set a valid INITIAL_ADMIN_USERNAME and a 12-72 byte INITIAL_ADMIN_PASSWORD in production");
+        }
+        return [{ username, password, role: "admin" as const, name: "Administrator" }];
+      })()
+    : [
+        { username: "admin", password: "AgentShield29241", role: "admin" as const, name: "Admin User" },
+        { username: "operator", password: "security-ops", role: "approver" as const, name: "Security Operator" },
+      ];
 
-const USERS: Record<string, AuthUser> = {
-  admin: { password: "AgentShield29241", role: "admin", name: "Admin User", email: "admin@agentshield.local" },
-  operator: { password: "security-ops", role: "approver", name: "Security Operator", email: "operator@agentshield.local" },
-};
+  for (const demoUser of demoUsers) {
+    if (await getAuthUser(demoUser.username)) continue;
+    await createAuthUser({
+      username: demoUser.username,
+      email: `${demoUser.username}@agentshield.local`,
+      passwordHash: await bcrypt.hash(demoUser.password, 12),
+      role: demoUser.role,
+      name: demoUser.name,
+    });
+  }
+}
 
 /**
  * POST /auth/register
  */
-router.post("/register", (req: Request, res: Response) => {
-  const { username, password, role = "operator" } = req.body as {
-    username?: string;
-    password?: string;
-    role?: string;
-  };
+router.post("/register", asyncHandler(async (req: Request, res: Response) => {
+  const body = req.body as { username?: unknown; password?: unknown; role?: unknown } | null;
+  const username = body?.username;
+  const password = body?.password;
+  const role = body?.role ?? "operator";
 
-  if (!username?.trim() || !password) {
+  if (typeof username !== "string" || !username.trim() ||
+      typeof password !== "string" || !password) {
     res.status(400).json({ error: "Username and password are required" });
     return;
   }
@@ -42,39 +58,56 @@ router.post("/register", (req: Request, res: Response) => {
     res.status(400).json({ error: "Password must be at least 6 characters" });
     return;
   }
+  if (Buffer.byteLength(password, "utf8") > 72) {
+    res.status(400).json({ error: "Password must be no more than 72 bytes" });
+    return;
+  }
 
   const key = username.toLowerCase().trim();
-
-  if (USERS[key]) {
+  if (!/^[a-z0-9._-]{3,32}$/.test(key)) {
+    res.status(400).json({ error: "Username must be 3-32 characters (letters, numbers, . _ -)" });
+    return;
+  }
+  if (await getAuthUser(key)) {
     res.status(409).json({ error: "Username already taken" });
     return;
   }
 
-  const roleMap: Record<string, AuthUser["role"]> = {
+  const roleMap: Record<string, "approver" | "auditor" | "agent"> = {
     operator: "approver",
     approver: "approver",
     auditor: "auditor",
     agent: "agent",
   };
-  const userRole = roleMap[role];
+  const userRole = typeof role === "string" ? roleMap[role] : undefined;
   if (!userRole) {
     res.status(400).json({ error: "Invalid role" });
     return;
   }
 
-  const user: AuthUser = {
-    password,
+  const email = `${key}@agentshield.local`;
+  const user = {
+    username: key,
+    email,
+    passwordHash: await bcrypt.hash(password, 12),
     role: userRole,
     name: username.trim(),
-    email: `${key}@agentshield.local`,
   };
+  try {
+    await createAuthUser(user);
+  } catch (error) {
+    if (await getAuthUser(key)) {
+      res.status(409).json({ error: "Username already taken" });
+      return;
+    }
+    throw error;
+  }
+
   const tokens = createTokenPair({
     userId: key,
-    email: user.email,
+    email,
     role: user.role,
   });
-  USERS[key] = user;
-  logger.info(CTX, `New user registered: ${key} (${userRole})`);
 
   res.status(201).json({
     message: "Account created successfully",
@@ -84,9 +117,9 @@ router.post("/register", (req: Request, res: Response) => {
     refreshToken: tokens.refreshToken,
     token_type: "Bearer",
     expires_in: 900,
-    user: { id: key, username: key, email: user.email, role: user.role, name: user.name },
+    user: { id: key, username: key, email, role: user.role, name: user.name },
   });
-});
+}));
 
 /**
  * POST /auth/login
@@ -95,20 +128,26 @@ router.post("/register", (req: Request, res: Response) => {
 router.post(
   "/login",
   asyncHandler(async (req: Request, res: Response) => {
-    const { username, email, password } = req.body as {
-      username?: string;
-      email?: string;
-      password?: string;
-    };
+    const body = req.body as {
+      username?: unknown;
+      email?: unknown;
+      password?: unknown;
+    } | null;
+    const username = typeof body?.username === "string" ? body.username : undefined;
+    const email = typeof body?.email === "string" ? body.email : undefined;
+    const password = body?.password;
 
-    if (!password) {
+    if (typeof password !== "string" || !password) {
       throw ErrorFactory.invalidInput("password is required");
     }
 
-    const userKey = (username ?? email ?? "").toLowerCase().split("@")[0]; // handle email format too
-    const found = USERS[userKey];
+    const suppliedUsername = (username ?? email ?? "").toLowerCase().trim();
+    const userKey = suppliedUsername.includes("@")
+      ? suppliedUsername.slice(0, suppliedUsername.indexOf("@"))
+      : suppliedUsername;
+    const found = await getAuthUser(userKey);
 
-    if (!found || found.password !== password) {
+    if (!found || !(await bcrypt.compare(password, found.passwordHash))) {
       throw ErrorFactory.unauthorized("Invalid credentials");
     }
 
@@ -188,7 +227,7 @@ router.get(
     }
 
     const token = auth.slice(7);
-    const payload = verifyAccessToken(token) || verifyAccessToken(token);
+    const payload = verifyAccessToken(token);
 
     if (!payload) {
       throw ErrorFactory.unauthorized("Invalid or expired token");

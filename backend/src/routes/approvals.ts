@@ -6,6 +6,8 @@ import {
 } from "../approvalGate";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { ErrorFactory } from "../errors/ErrorFactory";
+import { requireRole } from "../middleware/authorization";
+import type { AuthenticatedRequest } from "../middleware/authorization";
 import type { ApprovalStatus } from "../types";
 
 const router = Router();
@@ -44,8 +46,9 @@ router.get(
  */
 router.post(
   "/:id/approve",
+  requireRole("admin", "approver"),
   asyncHandler(async (req: Request, res: Response) => {
-    const { resolvedBy } = req.body as { resolvedBy?: string };
+    const resolvedBy = (req as AuthenticatedRequest).user?.id;
     if (!resolvedBy) {
       throw ErrorFactory.invalidInput('"resolvedBy" is required');
     }
@@ -64,11 +67,12 @@ router.post(
  */
 router.post(
   "/:id/reject",
+  requireRole("admin", "approver"),
   asyncHandler(async (req: Request, res: Response) => {
-    const { resolvedBy, rejectionReason } = req.body as {
-      resolvedBy?: string;
+    const { rejectionReason } = req.body as {
       rejectionReason?: string;
     };
+    const resolvedBy = (req as AuthenticatedRequest).user?.id;
     if (!resolvedBy) {
       throw ErrorFactory.invalidInput('"resolvedBy" is required');
     }

@@ -105,6 +105,54 @@ function migrate(db: Database): void {
     )
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS auth_users (
+      username      TEXT PRIMARY KEY,
+      email         TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role          TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      created_at    TEXT NOT NULL
+    )
+  `);
+}
+
+export interface StoredAuthUser {
+  username: string;
+  email: string;
+  passwordHash: string;
+  role: "admin" | "approver" | "auditor" | "agent";
+  name: string;
+}
+
+export async function getAuthUser(username: string): Promise<StoredAuthUser | null> {
+  const db = await getDb();
+  const stmt = db.prepare("SELECT * FROM auth_users WHERE username = ?");
+  stmt.bind([username]);
+  if (!stmt.step()) {
+    stmt.free();
+    return null;
+  }
+  const row = stmt.getAsObject() as Record<string, unknown>;
+  stmt.free();
+  return {
+    username: row.username as string,
+    email: row.email as string,
+    passwordHash: row.password_hash as string,
+    role: row.role as StoredAuthUser["role"],
+    name: row.name as string,
+  };
+}
+
+export async function createAuthUser(user: StoredAuthUser): Promise<void> {
+  const db = await getDb();
+  db.run(
+    `INSERT INTO auth_users (username, email, password_hash, role, name, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [user.username, user.email, user.passwordHash, user.role, user.name, new Date().toISOString()]
+  );
+  flush(db);
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────

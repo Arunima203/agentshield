@@ -158,35 +158,27 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
       error: error instanceof Error ? error.stack : String(error),
     });
 
-    // Fallback: Return default allow response with rule-based scoring
-    const fallbackRiskScore = 50; // Medium risk fallback
-    const now = new Date().toISOString();
-
-    const toolCall: ToolCall = {
-      id: uuidv4(),
-      tool: req.tool,
-      args: req.args,
-      agentId: req.agentId,
-      sessionId: req.sessionId,
-      metadata: req.metadata,
-      timestamp: now,
+    const failedAt = new Date().toISOString();
+    const failureFinding = {
+      rule: "inspection_error",
+      reason: "Inspection failed; the tool call was blocked for safety",
+      score: 100,
     };
 
-    // Still write audit entry with error indicator
     const auditEntry: AuditEntry = {
       id: uuidv4(),
       toolCallId: toolCall.id,
       tool: req.tool,
       agentId: req.agentId,
       sessionId: req.sessionId,
-      riskScore: fallbackRiskScore,
-      riskLevel: "medium",
-      decision: "allow", // Fail-safe: allow on error
-      approvalStatus: "auto_approved",
-      riskFindings: JSON.stringify([{ name: "Inspection Error", severity: "medium" }]),
+      riskScore: 100,
+      riskLevel: "critical",
+      decision: "block",
+      approvalStatus: "auto_blocked",
+      riskFindings: JSON.stringify([failureFinding]),
       secretFindings: JSON.stringify([]),
-      sanitizedArgsSnapshot: JSON.stringify(req.args),
-      createdAt: now,
+      sanitizedArgsSnapshot: "{}",
+      createdAt: failedAt,
     };
 
     try {
@@ -197,12 +189,12 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
 
     return {
       toolCallId: toolCall.id,
-      decision: "allow",
-      riskScore: fallbackRiskScore,
-      riskLevel: "medium",
-      riskFindings: [{ severity: "medium" as const, rule: "inspection_error", reason: "Fallback decision due to inspection error" }],
+      decision: "block",
+      riskScore: 100,
+      riskLevel: "critical",
+      riskFindings: [failureFinding],
       secretsDetected: false,
-      message: "Tool call approved with fallback scoring (inspection error occurred)",
+      message: "Tool call blocked because the security inspection failed",
     };
   }
 }

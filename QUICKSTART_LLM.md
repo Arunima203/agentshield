@@ -53,7 +53,7 @@ python -m llm.e2e_test
 
 ### Make a Request
 ```bash
-curl -X POST http://localhost:5000/inspect \
+curl -X POST http://localhost:3002/inspect \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "execute_pwsh",
@@ -114,7 +114,7 @@ Deterministic (60%)        LLM Semantic (40%)       Final Score
 | `LLM unavailable` | Check Ollama is running: `curl http://localhost:11434/api/tags` |
 | `Model not found` | Pull it: `ollama pull qwen2.5:7b` |
 | `Port 8000 in use` | `lsof -i :8000` and kill process, or use `LLM_API_PORT=8001` |
-| `Port 5000 in use` | Use `PORT=5001 npm run dev` |
+| `Port 3002 in use` | Use `PORT=3003 npm run dev` |
 | `Timeout` | Increase in env: `OLLAMA_TIMEOUT=120` |
 
 ## Next Steps

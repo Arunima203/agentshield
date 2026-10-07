@@ -41,7 +41,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/dist ./dist
 COPY --from=builder --chown=nodejs:nodejs /app/agentshield.config.yaml ./agentshield.config.yaml
 
 # Create logs directory
-RUN mkdir -p /app/logs && chown nodejs:nodejs /app/logs
+RUN mkdir -p /app/logs /app/data && chown -R nodejs:nodejs /app/logs /app/data
 
 # Switch to non-root user
 USER nodejs

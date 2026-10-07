@@ -12,7 +12,7 @@ This guide covers containerization and deployment of AgentShield using Docker an
 ### Local Development Stack
 
 ```bash
-# Start core services (PostgreSQL + Backend)
+# Start the backend (SQLite database is stored in a Docker volume)
 docker-compose up
 
 # In another terminal, start LLM services (optional)
@@ -20,13 +20,12 @@ docker-compose --profile llm up
 ```
 
 **Services:**
-- Backend: http://localhost:3000
-- PostgreSQL: localhost:5432 (inside docker network)
+- Backend: http://localhost:3002
 - LLM API: http://localhost:8000 (with profile)
 - Ollama: http://localhost:11434 (with profile)
 
 **Environment:** `docker-compose.yml` uses development defaults
-- PostgreSQL: agentshield / agentshield_password
+- SQLite data persists in the `backend-data` Docker volume
 - JWT secrets: dev-only values (change in production)
 - Log level: debug
 
@@ -71,14 +70,16 @@ cp nginx/ssl/live/agentshield.yourdomain.com/privkey.pem nginx/ssl/key.pem
 
 Create `.env.production`:
 ```bash
-# Database
-DB_USER=agentshield_prod
-DB_PASSWORD=$(openssl rand -base64 32)
-DB_POOL_SIZE=20
-
 # JWT Secrets (generate new ones)
 JWT_ACCESS_SECRET=$(openssl rand -base64 32)
 JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+
+# First-run administrator (required by the production backend)
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=$(openssl rand -hex 24)
+
+# Public frontend origin (must match the deployed frontend URL)
+ALLOWED_ORIGINS=https://agentshield.yourdomain.com
 
 # Grafana
 GRAFANA_PASSWORD=$(openssl rand -base64 16)
@@ -88,7 +89,8 @@ Load the environment:
 ```bash
 source .env.production
 # Or on Windows:
-# $env:DB_USER="agentshield_prod"; $env:DB_PASSWORD="..."; etc.
+# $env:JWT_ACCESS_SECRET="..."; $env:JWT_REFRESH_SECRET="..."
+# $env:INITIAL_ADMIN_USERNAME="admin"; $env:INITIAL_ADMIN_PASSWORD="..."
 ```
 
 ### 3. HTTP Basic Auth (Prometheus/Grafana)
@@ -134,34 +136,17 @@ docker-compose -f docker-compose.prod.yml logs -f
 CONTAINER ID   IMAGE                           STATUS              
 xxx            agentshield-nginx               Up 5s (healthy)
 xxx            agentshield-backend-1           Up 4s (healthy)
-xxx            agentshield-backend-2           Up 4s (healthy)
-xxx            agentshield-backend-3           Up 4s (healthy)
 xxx            agentshield-ollama              Up 10s (healthy)
 xxx            agentshield-llm-api             Up 3s (healthy)
-xxx            agentshield-postgres            Up 2s (healthy)
 xxx            agentshield-prometheus          Up 2s
 xxx            agentshield-grafana             Up 2s
 ```
 
-### 6. Initialize Data
+### 6. Verify Persistent Data
 
 ```bash
-# The database is auto-initialized via docker-entrypoint-initdb.d
-# Verify it's ready:
-docker-compose -f docker-compose.prod.yml exec postgres pg_isready -U agentshield_prod
-
-# Check tables were created
-docker-compose -f docker-compose.prod.yml exec postgres psql -U agentshield_prod -d agentshield -c "\dt"
-```
-
-Expected tables:
-```
-schema_version
-users
-audit_log
-approval_requests
-configuration
-sessions
+# The SQLite database is initialized automatically and stored in backend-data.
+docker-compose -f docker-compose.prod.yml exec backend-1 ls -l /app/data/agentshield.db
 ```
 
 ### 7. Verify Deployment
@@ -248,7 +233,7 @@ curl --user admin:password https://localhost/metrics
 
 **View backend logs:**
 ```bash
-docker-compose -f docker-compose.prod.yml logs -f backend-1 backend-2 backend-3
+docker-compose -f docker-compose.prod.yml logs -f backend-1
 ```
 
 **View nginx logs:**
@@ -265,36 +250,16 @@ docker-compose -f docker-compose.prod.yml logs -f llm-api
 
 ## Scaling & Performance
 
-### Database Connection Pooling
-Configured in `docker-compose.prod.yml`:
-```yaml
-DB_POOL_SIZE=20        # Max 20 connections
-DB_IDLE_TIMEOUT=30000  # 30s idle timeout
-```
-
-**Adjust based on load:**
-- Low traffic: 5-10 connections
-- Medium traffic: 10-20 connections
-- High traffic: 20-50 connections
-
-### Backend Replicas
-Production stack includes 3 backend replicas with **least-conn** load balancing:
-- Request 1 → backend-1
-- Request 2 → backend-2
-- Request 3 → backend-3
-- Request 4 → whichever has fewest active connections
-
-**Add more replicas:**
-```yaml
-backend-4:
-  build:
-    context: .
-    dockerfile: backend/Dockerfile
-  # ... copy from backend-1, change container_name
-```
+The current backend stores users, approvals, and audit entries in a local SQLite
+database. Production Compose intentionally runs one backend instance with a
+persistent volume. Do not add backend replicas or scale this service horizontally:
+instances would not share database state or realtime events. A shared database
+and Redis-backed event transport are required before horizontal scaling.
 
 ### Ollama GPU Support
-By default, Ollama runs on CPU. To enable GPU (NVIDIA):
+Ollama uses CPU by default so the production Compose stack works without an
+NVIDIA runtime. To enable GPU acceleration, add this reservation to the `ollama`
+service in `docker-compose.prod.yml`:
 
 ```yaml
 ollama:
@@ -318,18 +283,18 @@ Requires:
 
 ### Database Backups
 
-**Manual backup:**
+**Manual backup:** stop the backend briefly so the SQLite file cannot change while copied.
 ```bash
-docker-compose -f docker-compose.prod.yml exec postgres pg_dump \
-  -U agentshield_prod \
-  -d agentshield > backup_$(date +%Y%m%d_%H%M%S).sql
+docker-compose -f docker-compose.prod.yml stop backend-1
+docker cp agentshield-backend-1:/app/data/agentshield.db "backup_$(date +%Y%m%d_%H%M%S).db"
+docker-compose -f docker-compose.prod.yml start backend-1
 ```
 
 **Restore:**
 ```bash
-docker-compose -f docker-compose.prod.yml exec postgres psql \
-  -U agentshield_prod \
-  -d agentshield < backup_20240101_120000.sql
+docker-compose -f docker-compose.prod.yml stop backend-1
+docker cp backup_20261007_120000.db agentshield-backend-1:/app/data/agentshield.db
+docker-compose -f docker-compose.prod.yml start backend-1
 ```
 
 **Automated backups (cron):**
@@ -337,9 +302,9 @@ docker-compose -f docker-compose.prod.yml exec postgres psql \
 # Add to crontab: 0 2 * * * /path/to/backup.sh
 cat > /path/to/backup.sh << 'EOF'
 #!/bin/bash
-docker-compose -f docker-compose.prod.yml exec postgres pg_dump \
-  -U agentshield_prod \
-  -d agentshield > /backups/backup_$(date +\%Y\%m\%d_\%H\%M\%S).sql
+docker-compose -f docker-compose.prod.yml stop backend-1
+docker cp agentshield-backend-1:/app/data/agentshield.db "/backups/backup_$(date +\%Y\%m\%d_\%H\%M\%S).db"
+docker-compose -f docker-compose.prod.yml start backend-1
 find /backups -type f -mtime +30 -delete  # Keep 30 days
 EOF
 chmod +x /path/to/backup.sh
@@ -394,12 +359,9 @@ chmod +x /path/to/renew-cert.sh
 
 ### Backend won't start: "Database not initialized"
 ```bash
-# Wait for PostgreSQL to be ready
-docker-compose -f docker-compose.prod.yml exec postgres pg_isready
-
-# Check if migrations ran
-docker-compose -f docker-compose.prod.yml exec postgres psql \
-  -U agentshield_prod -d agentshield -c "SELECT version FROM schema_version"
+# Check the SQLite data directory and backend logs
+docker-compose -f docker-compose.prod.yml exec backend-1 ls -l /app/data
+docker-compose -f docker-compose.prod.yml logs --tail=100 backend-1
 ```
 
 ### LLM service returns 503
@@ -488,12 +450,8 @@ git pull origin main
 # Rebuild images
 docker-compose -f docker-compose.prod.yml build backend
 
-# Restart one backend at a time
+# The backend uses SQLite; restart its single instance
 docker-compose -f docker-compose.prod.yml up -d backend-1
-sleep 10  # Wait for health check
-docker-compose -f docker-compose.prod.yml up -d backend-2
-sleep 10
-docker-compose -f docker-compose.prod.yml up -d backend-3
 
 # Verify no errors
 docker-compose -f docker-compose.prod.yml logs | grep -i error
@@ -504,7 +462,7 @@ docker-compose -f docker-compose.prod.yml logs | grep -i error
 ## Disaster Recovery
 
 ### Backup Strategy
-- **Daily:** Automated PostgreSQL dumps to `/backups`
+- **Daily:** Automated SQLite database backups to `/backups`
 - **Weekly:** Full system snapshot (via cloud provider)
 - **Monthly:** Off-site backup (S3, GCS, etc.)
 
@@ -513,11 +471,11 @@ docker-compose -f docker-compose.prod.yml logs | grep -i error
 # 1. Stop application
 docker-compose -f docker-compose.prod.yml down
 
-# 2. Restore database
-docker run --rm -v agentshield_postgres-data:/data \
-  -v ./backup.sql:/backup.sql \
-  postgres:15-alpine \
-  psql -U agentshield_prod -d agentshield < /backup.sql
+# 2. Restore the persistent SQLite database
+docker volume ls
+docker run --rm -v agentshield-backend-data:/data \
+  -v "$PWD/backup.db:/backup/agentshield.db:ro" alpine \
+  cp /backup/agentshield.db /data/agentshield.db
 
 # 3. Start application
 docker-compose -f docker-compose.prod.yml up -d

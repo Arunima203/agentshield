@@ -91,7 +91,7 @@ python -m llm.e2e_test
 ### Option 3: Manual Test
 ```bash
 # Test a safe operation
-curl -X POST http://localhost:5000/inspect \
+curl -X POST http://localhost:3002/inspect \
   -H "Content-Type: application/json" \
   -d '{
     "tool": "read_file",
@@ -131,7 +131,7 @@ Response: Requires human approval
 ### Components
 - **Ollama** (:11434) — Local LLM runtime
 - **FastAPI** (:8000) — LLM service wrapper
-- **Node.js** (:5000) — Main backend
+- **Node.js** (:3002) — Main backend
 
 ### Data Flow
 ```
@@ -351,7 +351,7 @@ npx ts-node e2e-test.ts
 python -m llm.e2e_test
 
 # Health checks
-curl http://localhost:5000/health
+curl http://localhost:3002/health
 curl http://localhost:8000/health
 ```
 

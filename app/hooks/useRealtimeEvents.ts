@@ -44,7 +44,10 @@ export function useRealtimeEvents<T = any>(
   const MAX_RECONNECT_ATTEMPTS = 5;
 
   // Get backend URL
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
+  const backendUrl =
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    'http://localhost:3002';
 
   const subscribe = useCallback(() => {
     if (!username || !accessToken) {

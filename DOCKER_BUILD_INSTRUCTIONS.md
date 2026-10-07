@@ -115,8 +115,7 @@ docker-compose -f docker-compose.prod.yml build nginx
 ### Development Stack (`docker-compose.yml`)
 
 Services:
-- **postgres** — PostgreSQL 15 database
-- **backend** — Node.js application
+- **backend** — Node.js application with persistent SQLite storage
 - **llm-api** — Python FastAPI (optional, `--profile llm`)
 - **ollama** — Ollama LLM runtime (optional, `--profile llm`)
 
@@ -130,17 +129,15 @@ docker-compose --profile llm up
 ```
 
 **Ports:**
-- Backend: 3000
-- PostgreSQL: 5432
+- Backend: 3002
 - LLM API: 8000 (with profile)
 - Ollama: 11434 (with profile)
 
 ### Production Stack (`docker-compose.prod.yml`)
 
 Services:
-- **nginx** — Reverse proxy + load balancer
-- **backend-1, backend-2, backend-3** — 3 replicas
-- **postgres** — PostgreSQL database
+- **nginx** — Reverse proxy
+- **backend-1** — Single Node.js instance with persistent SQLite storage
 - **ollama** — LLM runtime
 - **llm-api** — FastAPI analyzer
 - **prometheus** — Metrics collection
@@ -205,10 +202,10 @@ Before deploying to production:
 - [ ] **Environment Secrets**
   ```bash
   # Create .env.production with secure values
-  DB_USER=agentshield_prod
-  DB_PASSWORD=$(openssl rand -base64 32)
   JWT_ACCESS_SECRET=$(openssl rand -base64 32)
   JWT_REFRESH_SECRET=$(openssl rand -base64 32)
+  INITIAL_ADMIN_USERNAME=admin
+  INITIAL_ADMIN_PASSWORD=$(openssl rand -hex 24)
   GRAFANA_PASSWORD=$(openssl rand -base64 16)
   ```
 

@@ -99,6 +99,7 @@ export interface AuditEntry {
 export interface ToolRule {
   name: string;
   risk_score: number;
+  enabled?: boolean;
   description?: string;
   require_approval?: boolean;
 }

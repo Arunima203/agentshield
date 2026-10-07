@@ -4,7 +4,6 @@ import helmet from "helmet";
 import morgan from "morgan";
 import "express-async-errors";
 
-import { apiKeyAuth } from "./middleware/auth";
 import { jwtAuth } from "./middleware/jwtAuth";
 import { errorHandler } from "./middleware/errorHandler";
 import { asyncHandler } from "./middleware/asyncHandler";

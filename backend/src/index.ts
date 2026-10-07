@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createApp } from "./app";
 import { loadConfig } from "./config";
 import { getDb } from "./auditLogger";
+import { seedDemoUsers } from "./routes/auth";
 import { logger } from "./logger";
 import { startTimeoutSweep } from "./tasks/timeoutSweep";
 import { setupSocketIO, setGlobalIO } from "./realtime/socketServer";
@@ -9,12 +10,23 @@ import { setupSocketIO, setGlobalIO } from "./realtime/socketServer";
 const CTX = "Bootstrap";
 
 async function main(): Promise<void> {
+  if (process.env.NODE_ENV === "production") {
+    const accessSecret = process.env.JWT_ACCESS_SECRET;
+    const refreshSecret = process.env.JWT_REFRESH_SECRET;
+    if (!accessSecret || accessSecret.length < 32 ||
+        !refreshSecret || refreshSecret.length < 32 ||
+        accessSecret === refreshSecret) {
+      throw new Error("Production requires distinct JWT_ACCESS_SECRET and JWT_REFRESH_SECRET values of at least 32 characters");
+    }
+  }
+
   // 1. Load config
   const config = loadConfig();
   logger.info(CTX, `Config loaded (version=${config.version})`);
 
   // 2. Initialise database (runs migrations)
   await getDb();
+  await seedDemoUsers();
 
   // 3. Create Express app
   const app = createApp();
@@ -28,8 +40,8 @@ async function main(): Promise<void> {
   startTimeoutSweep();
 
   // 6. Start HTTP/WebSocket server
-  const port = parseInt(process.env.PORT ?? "3000", 10);
-  const host = process.env.HOST ?? "localhost";
+  const port = parseInt(process.env.PORT ?? "3002", 10);
+  const host = process.env.HOST ?? "0.0.0.0";
 
   httpServer.listen(port, host, () => {
     logger.info(CTX, `AgentShield listening on http://${host}:${port}`);

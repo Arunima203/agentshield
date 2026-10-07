@@ -80,3 +80,14 @@ export function reloadConfig(): ShieldConfig {
   _config = null;
   return loadConfig();
 }
+
+export function saveConfig(config: ShieldConfig): ShieldConfig {
+  const configPath = DEFAULT_CONFIG_PATH;
+  const directory = path.dirname(configPath);
+  fs.mkdirSync(directory, { recursive: true });
+  const temporaryPath = `${configPath}.tmp`;
+  fs.writeFileSync(temporaryPath, yaml.dump(config), "utf-8");
+  fs.renameSync(temporaryPath, configPath);
+  _config = config;
+  return _config;
+}

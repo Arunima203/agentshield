@@ -4,8 +4,6 @@
  * Uses JWT tokens from auth context.
  */
 
-import { useAuth } from '@/app/contexts/auth'
-
 const BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3002";
 
@@ -36,6 +34,14 @@ async function request<T>(
       window.location.href = '/login'
     }
     throw new Error('Session expired — please login again')
+  }
+
+  if (res.status === 403 && path === "/inspect") {
+    const inspection = await res.json().catch(() => null)
+    if (inspection?.decision === "block") {
+      return inspection as T
+    }
+    throw new Error(inspection?.error ?? "Inspection request was forbidden")
   }
 
   if (!res.ok) {
@@ -115,6 +121,22 @@ export interface AuditStats {
   total: number;
   byDecision: Array<{ decision: string; count: number }>;
   byLevel: Array<{ risk_level: string; count: number }>;
+}
+
+export interface ShieldConfig {
+  version: string
+  risk: { block_threshold: number; review_threshold: number }
+  tools: Array<{
+    name: string
+    risk_score: number
+    enabled?: boolean
+    description?: string
+    require_approval?: boolean
+  }>
+  secrets: { enabled: boolean; patterns: Array<{ name: string; regex: string }> }
+  blocked_patterns: Array<{ name: string; regex: string; reason: string }>
+  allowed_domains: { enabled: boolean; list: string[] }
+  audit: { enabled: boolean; retention_days: number }
 }
 
 // ─── Health ───────────────────────────────────────────────────────────────────
@@ -242,4 +264,17 @@ export async function rejectMcpConnection(
     method: "POST",
     body: JSON.stringify({ resolvedBy }),
   });
+export async function getShieldConfig(token: string): Promise<ShieldConfig> {
+  return request("/config", token)
+}
+
+export async function updateShieldConfig(
+  token: string,
+  config: ShieldConfig
+): Promise<ShieldConfig> {
+  const response = await request<{ config: ShieldConfig }>("/config", token, {
+    method: "POST",
+    body: JSON.stringify(config),
+  })
+  return response.config
 }

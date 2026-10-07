@@ -85,6 +85,7 @@ function resolveToolRuleScore(toolName: string): { score: number; requireApprova
   let requireApproval = false;
 
   for (const rule of config.tools) {
+    if (rule.enabled === false) continue;
     const matches =
       rule.name === toolName ||
       rule.name === "*" ||

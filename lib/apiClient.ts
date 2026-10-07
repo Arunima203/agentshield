@@ -73,6 +73,9 @@ export async function fetchWithTokenRefresh<T>(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: response.statusText }))
+    if (response.status === 403 && path === '/inspect' && errorData.decision === 'block') {
+      return errorData as T
+    }
     throw new Error(errorData.error ?? `Request failed: ${response.status}`)
   }
 

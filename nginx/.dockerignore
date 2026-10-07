@@ -1,0 +1,12 @@
+.git
+.gitignore
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode
+.idea
+README.md
+ssl/key.pem
+ssl/cert.pem
+.htpasswd

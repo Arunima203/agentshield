@@ -6,6 +6,7 @@
  */
 
 import { getLLMService } from './llmService';
+import { getDb } from './auditLogger';
 import { logger } from './logger';
 
 const CTX = 'HealthCheck';
@@ -111,8 +112,19 @@ class HealthChecker {
 
     const startTime = Date.now();
     try {
-      // Check if SQLite database is accessible
-      // In production, add actual database query here
+      // Execute a simple test query to verify database is accessible
+      const db = await getDb();
+      
+      // Test query that works with SQLite
+      const stmt = db.prepare('SELECT 1 as status');
+      stmt.step();
+      const result = stmt.getAsObject();
+      stmt.free();
+      
+      if (!result || (result as any).status !== 1) {
+        throw new Error('Database test query returned unexpected result');
+      }
+
       const responseTime = Date.now() - startTime;
 
       const health: ComponentHealth = {

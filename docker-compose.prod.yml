@@ -1,27 +1,25 @@
-version: '3.8'
-
 # AgentShield Production Docker Compose
 # Complete stack: Nginx, Backend, LLM Service, Ollama, Prometheus, Grafana
 
 services:
   # Nginx API Gateway / Reverse Proxy
   nginx:
-    image: nginx:alpine
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
     container_name: agentshield-nginx
     ports:
       - "80:80"
       - "443:443"
-      - "9090:9090"
     volumes:
-      - ./nginx/agentshield.conf:/etc/nginx/sites-enabled/default
       - ./nginx/ssl:/etc/nginx/ssl
+      - ./nginx/.htpasswd:/etc/nginx/.htpasswd:ro
       - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
     environment:
       - TZ=UTC
     depends_on:
       - backend-1
-      - backend-2
-      - backend-3
     networks:
       - agentshield
     restart: unless-stopped
@@ -31,7 +29,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Backend Instances (3 replicas)
+  # Single backend instance: the current runtime uses a local SQLite database.
   backend-1:
     build:
       context: .
@@ -40,24 +38,22 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=agentshield
-      - DB_USER=${DB_USER:-agentshield}
-      - DB_PASSWORD=${DB_PASSWORD:-agentshield_password}
-      - DB_POOL_SIZE=10
-      - LLM_SERVICE_URL=http://llm-api:8000
+      - HOST=0.0.0.0
+      - DB_PATH=/app/data/agentshield.db
+      - LLM_API_URL=http://llm-api:8000
       - APPROVAL_MODE=auto
       - ENABLE_LLM=true
       - LOG_LEVEL=info
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://agentshield.local}
       - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - INITIAL_ADMIN_USERNAME=${INITIAL_ADMIN_USERNAME}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}
     volumes:
       - ./backend/logs:/app/logs
       - ./backend/agentshield.config.yaml:/app/agentshield.config.yaml
+      - backend-data:/app/data
     depends_on:
-      postgres:
-        condition: service_healthy
       llm-api:
         condition: service_healthy
     networks:
@@ -69,86 +65,10 @@ services:
       timeout: 10s
       retries: 3
 
-  backend-2:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    container_name: agentshield-backend-2
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=agentshield
-      - DB_USER=${DB_USER:-agentshield}
-      - DB_PASSWORD=${DB_PASSWORD:-agentshield_password}
-      - DB_POOL_SIZE=10
-      - LLM_SERVICE_URL=http://llm-api:8000
-      - APPROVAL_MODE=auto
-      - ENABLE_LLM=true
-      - LOG_LEVEL=info
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-    volumes:
-      - ./backend/logs:/app/logs
-      - ./backend/agentshield.config.yaml:/app/agentshield.config.yaml
-    depends_on:
-      postgres:
-        condition: service_healthy
-      llm-api:
-        condition: service_healthy
-    networks:
-      - agentshield
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  backend-3:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    container_name: agentshield-backend-3
-    environment:
-      - NODE_ENV=production
-      - PORT=3000
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_NAME=agentshield
-      - DB_USER=${DB_USER:-agentshield}
-      - DB_PASSWORD=${DB_PASSWORD:-agentshield_password}
-      - DB_POOL_SIZE=10
-      - LLM_SERVICE_URL=http://llm-api:8000
-      - APPROVAL_MODE=auto
-      - ENABLE_LLM=true
-      - LOG_LEVEL=info
-      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
-      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
-    volumes:
-      - ./backend/logs:/app/logs
-      - ./backend/agentshield.config.yaml:/app/agentshield.config.yaml
-    depends_on:
-      postgres:
-        condition: service_healthy
-      llm-api:
-        condition: service_healthy
-    networks:
-      - agentshield
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Ollama LLM Runtime
+  # Ollama LLM Runtime (internal only, no port exposure)
   ollama:
     image: ollama/ollama:latest
     container_name: agentshield-ollama
-    ports:
-      - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
     environment:
@@ -162,13 +82,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
   # FastAPI LLM Service
   llm-api:
@@ -176,8 +89,6 @@ services:
       context: .
       dockerfile: llm/Dockerfile
     container_name: agentshield-llm-api
-    ports:
-      - "8000:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_MODEL=qwen2.5:7b
@@ -187,7 +98,8 @@ services:
       - LLM_API_PORT=8000
       - LOG_LEVEL=info
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     volumes:
       - ./llm/logs:/app/logs
     networks:
@@ -197,6 +109,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
+      start_period: 15s
       retries: 3
 
   # Prometheus Monitoring
@@ -244,32 +157,14 @@ services:
       timeout: 10s
       retries: 3
 
-  # PostgreSQL Database (optional, for scaling)
-  postgres:
-    image: postgres:15-alpine
-    container_name: agentshield-postgres
-    environment:
-      - POSTGRES_DB=agentshield
-      - POSTGRES_USER=${DB_USER}
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./backend/src/database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-    networks:
-      - agentshield
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
 volumes:
   ollama-data:
   nginx-cache:
+  nginx-logs:
   prometheus-data:
   grafana-data:
-  postgres-data:
+  backend-data:
+    name: agentshield-backend-data
 
 networks:
   agentshield:

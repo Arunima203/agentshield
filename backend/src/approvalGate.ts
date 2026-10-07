@@ -7,6 +7,8 @@
 import { v4 as uuidv4 } from "uuid";
 import { getDb, updateAuditApproval } from "./auditLogger";
 import { logger } from "./logger";
+import { eventBus } from "./realtime/eventBus";
+import { emitApprovalCreated, emitApprovalResolved } from "./realtime/socketServer";
 import type {
   ApprovalRequest,
   ApprovalDecision,
@@ -44,19 +46,29 @@ export async function createApprovalRequest(
   );
   // flush is done by auditLogger on the shared db instance
 
+  const approval: ApprovalRequest = {
+    id,
+    toolCall,
+    inspection,
+    status: "pending" as ApprovalStatus,
+    createdAt: now,
+    timeoutMs,
+  };
+
   logger.info(
     CTX,
     `Approval request created: id=${id} tool="${toolCall.tool}" score=${inspection.riskScore}`
   );
 
-  return {
-    id,
-    toolCall,
-    inspection,
-    status: "pending",
-    createdAt: now,
-    timeoutMs,
-  };
+  // Emit real-time event for WebSocket clients
+  try {
+    await eventBus.publishApprovalCreated(approval);
+    emitApprovalCreated(approval);
+  } catch (error) {
+    logger.warn(CTX, `Failed to emit approval:created event: ${error}`);
+  }
+
+  return approval;
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
@@ -132,12 +144,22 @@ export async function resolveApproval(decision: ApprovalDecision): Promise<Appro
 
   await updateAuditApproval(existing.toolCall.id, newStatus, now);
 
+  const updated = { ...existing, status: newStatus, resolvedAt: now };
+
   logger.info(
     CTX,
     `Approval request ${decision.requestId} ${newStatus} by "${decision.resolvedBy}"`
   );
 
-  return { ...existing, status: newStatus, resolvedAt: now };
+  // Emit real-time event for WebSocket clients
+  try {
+    await eventBus.publishApprovalResolved(updated);
+    emitApprovalResolved(updated);
+  } catch (error) {
+    logger.warn(CTX, `Failed to emit approval:resolved event: ${error}`);
+  }
+
+  return updated;
 }
 
 // ─── Auto-resolve helpers ─────────────────────────────────────────────────────
@@ -150,6 +172,17 @@ export async function autoApprove(requestId: string, toolCallId: string): Promis
     [now, requestId]
   );
   await updateAuditApproval(toolCallId, "auto_approved", now);
+
+  // Emit event
+  try {
+    const req = await getApprovalRequest(requestId);
+    if (req) {
+      await eventBus.publishApprovalResolved({ ...req, status: "auto_approved", resolvedAt: now });
+      emitApprovalResolved({ ...req, status: "auto_approved", resolvedAt: now });
+    }
+  } catch (error) {
+    logger.warn(CTX, `Failed to emit auto-approve event: ${error}`);
+  }
 }
 
 export async function autoBlock(requestId: string, toolCallId: string): Promise<void> {
@@ -160,6 +193,17 @@ export async function autoBlock(requestId: string, toolCallId: string): Promise<
     [now, requestId]
   );
   await updateAuditApproval(toolCallId, "auto_blocked", now);
+
+  // Emit event
+  try {
+    const req = await getApprovalRequest(requestId);
+    if (req) {
+      await eventBus.publishApprovalResolved({ ...req, status: "auto_blocked", resolvedAt: now });
+      emitApprovalResolved({ ...req, status: "auto_blocked", resolvedAt: now });
+    }
+  } catch (error) {
+    logger.warn(CTX, `Failed to emit auto-block event: ${error}`);
+  }
 }
 
 // ─── Timeout sweep ────────────────────────────────────────────────────────────
@@ -197,6 +241,17 @@ export async function sweepTimeouts(): Promise<number> {
     );
     await updateAuditApproval(item.tool_call_id, "timeout", ts);
     logger.warn(CTX, `Approval request ${item.id} timed out`);
+
+    // Emit event
+    try {
+      const req = await getApprovalRequest(item.id);
+      if (req) {
+        await eventBus.publishApprovalResolved({ ...req, status: "timeout", resolvedAt: ts });
+        emitApprovalResolved({ ...req, status: "timeout", resolvedAt: ts });
+      }
+    } catch (error) {
+      logger.warn(CTX, `Failed to emit timeout event: ${error}`);
+    }
   }
 
   return toTimeout.length;

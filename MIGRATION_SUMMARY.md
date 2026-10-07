@@ -1,5 +1,8 @@
 # PostgreSQL Migration - Complete ✅
 
+> Historical migration notes only. The current application uses persistent SQLite, not
+> PostgreSQL; use `DEPLOYMENT_GUIDE.md` and `DOCKER_BUILD_INSTRUCTIONS.md` for current setup.
+
 **Status**: PRODUCTION READY
 **Commit**: f9cbad6 (pushed to GitHub)
 **Date**: October 6, 2026

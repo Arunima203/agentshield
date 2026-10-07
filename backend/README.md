@@ -12,7 +12,7 @@ npm run build
 npm start
 ```
 
-Server starts at `http://localhost:3000`.
+Server starts at `http://localhost:3002` by default so it can run alongside the Next.js frontend.
 
 ## API Endpoints
 
@@ -32,7 +32,7 @@ Server starts at `http://localhost:3000`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3000` | HTTP port |
+| `PORT` | `3002` | HTTP and WebSocket port |
 | `AGENTSHIELD_API_KEY` | *(unset)* | API key auth (disabled if not set) |
 | `APPROVAL_MODE` | `auto` | `auto / strict / audit` |
 | `DB_PATH` | `./data/agentshield.db` | SQLite database path |

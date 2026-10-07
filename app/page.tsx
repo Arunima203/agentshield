@@ -5,15 +5,17 @@ import { useRouter } from 'next/navigation'
 import {
   AlertTriangle, Bell, Check, ChevronRight, CircleDot,
   Clock3, FileWarning, Menu, ShieldCheck, Terminal, X,
-  Plus, Play, Search, Settings2, RefreshCw, Loader2, LogOut
+  Plus, Play, Search, RefreshCw, Loader2, LogOut
 } from 'lucide-react'
 import { useAuth } from '@/app/contexts/auth'
 import { ProtectedRoute } from '@/app/components/ProtectedRoute'
+import { useRealtimeApprovals, useRealtimeAudit } from './hooks/useRealtimeEvents'
 import {
-  getAuditStats, getAuditLog, getApprovals,
+  getAuditStats, getAuditLog, getApprovals, getShieldConfig, updateShieldConfig,
   approveRequest, rejectRequest, inspectToolCall,
   getMcpConnections, approveMcpConnection, rejectMcpConnection,
   type AuditStats, type AuditEntry, type ApprovalRequest, type AgentConnection
+  type AuditStats, type AuditEntry, type ApprovalRequest, type ShieldConfig
 } from '@/lib/api'
 
 // ─── Static data (agents / threats remain static — no backend entity yet) ─────
@@ -480,6 +482,7 @@ function Overview() {
   const [events, setEvents] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const realtimeEvents = useRealtimeAudit()
 
   const load = useCallback(async () => {
     if (!accessToken) {
@@ -489,12 +492,8 @@ function Overview() {
 
     try {
       setError(null)
-      const [s, e] = await Promise.all([
-        getAuditStats(accessToken),
-        getAuditLog(accessToken, { limit: 6 }),
-      ])
-      setStats(s)
-      setEvents(e.entries)
+      const stats = await getAuditStats(accessToken)
+      setStats(stats)
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Backend unreachable'
       if (msg.includes('expired') || msg.includes('401')) {
@@ -507,11 +506,19 @@ function Overview() {
     }
   }, [accessToken])
 
+  // Load stats on mount and poll periodically
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
-    return () => window.clearInterval(intervalId)
+    const interval = window.setInterval(() => { void load() }, 30000) // Poll every 30s instead of 5s
+    return () => window.clearInterval(interval)
   }, [load])
+
+  // Use real-time events for live audit feed
+  useEffect(() => {
+    if (realtimeEvents.events.length > 0) {
+      setEvents(realtimeEvents.events.slice(0, 6))
+    }
+  }, [realtimeEvents.events])
 
   const blocked   = stats?.byDecision.find(d => d.decision === 'block')?.count ?? 0
   const allowed   = stats?.byDecision.find(d => d.decision === 'allow')?.count ?? 0
@@ -524,11 +531,11 @@ function Overview() {
         <div>
           <span className="eyebrow">SECURITY CONTROL CENTER / OVERVIEW</span>
           <h1>AgentShield Security</h1>
-          <p>{error ? <span style={{ color: 'salmon' }}>⚠ {error} — start the backend with <code>npm start</code></span> : 'Your agents are protected.'}</p>
+          <p>{error ? <span style={{ color: 'salmon' }}>⚠ {error} — start the backend with <code>npm start</code></span> : realtimeEvents.connected ? 'Your agents are protected. Live updates active ✓' : 'Your agents are protected.'}</p>
         </div>
         <div className="protected">
-          <span><i /> {error ? 'BACKEND OFFLINE' : 'PROTECTED'}</span>
-          <small>Last scan {new Date().toLocaleTimeString()}</small>
+          <span><i /> {error ? 'BACKEND OFFLINE' : realtimeEvents.connected ? 'REAL-TIME ACTIVE' : 'PROTECTED'}</span>
+          <small>Last update {new Date().toLocaleTimeString()}</small>
         </div>
       </section>
 
@@ -552,7 +559,7 @@ function Overview() {
 
       <div className="dashboard-grid">
         {/* Live agent execution panel */}
-        <Panel title="Live Agent Events" eyebrow="REAL-TIME AUDIT FEED">
+        <Panel title="Live Agent Events" eyebrow={realtimeEvents.connected ? "REAL-TIME AUDIT FEED" : "AUDIT FEED (5s POLL)"}>
           {loading ? <Spinner /> : events.length === 0 ? (
             <p style={{ padding: '1rem', opacity: 0.5 }}>No events yet — submit a tool call to /inspect</p>
           ) : (
@@ -568,7 +575,7 @@ function Overview() {
             </div>
           )}
           <div className="panel-foot">
-            <span><CircleDot size={13} /> Live from audit log</span>
+            <span><CircleDot size={13} /> {realtimeEvents.connected ? "Live via WebSocket" : "Live from audit log (polling)"}</span>
             <button onClick={load}><RefreshCw size={13} /> Refresh</button>
           </div>
         </Panel>
@@ -613,6 +620,7 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
   const [requests, setRequests] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState<string | null>(null)
+  const realtimeApprovals = useRealtimeApprovals()
 
   const load = useCallback(async () => {
     if (!accessToken) {
@@ -621,20 +629,36 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
     }
 
     try {
-      const data = await getApprovals(accessToken, 'pending', compact ? 2 : 20)
+      const data = await getApprovals(accessToken, 'pending', 20)
       setRequests(data.requests)
     } catch {
       // backend offline — fail silently in compact mode
     } finally {
       setLoading(false)
     }
-  }, [compact, accessToken])
+  }, [accessToken])
 
+  // Initial load
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
+  }, [load])
+
+  // Poll for initial data less frequently now that we have real-time updates
+  useEffect(() => {
+    const intervalId = window.setInterval(() => { void load() }, 30000)
     return () => window.clearInterval(intervalId)
   }, [load])
+
+  // Update with real-time changes
+  useEffect(() => {
+    if (realtimeApprovals.events.length > 0) {
+      // Filter for pending approvals only and take latest
+      const pending = realtimeApprovals.events.filter((e: any) => e.status === 'pending').slice(0, compact ? 2 : 20)
+      if (pending.length > 0) {
+        setRequests(pending)
+      }
+    }
+  }, [realtimeApprovals.events, compact])
 
   async function handleApprove(id: string) {
     if (!accessToken) return
@@ -652,7 +676,7 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
     finally { setActing(null) }
   }
 
-  if (loading) return <Spinner />
+  if (loading && requests.length === 0) return <Spinner />
   if (requests.length === 0) return <p style={{ padding: '1rem', opacity: 0.5 }}>No pending approvals 🎉</p>
 
   return (
@@ -712,6 +736,7 @@ function MonitorPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [filter, setFilter] = useState('All')
   const [error, setError] = useState<string | null>(null)
+  const realtimeEvents = useRealtimeAudit()
 
   const load = useCallback(async (showRefresh = false) => {
     if (!accessToken) { setError('Not authenticated'); return }
@@ -740,13 +765,19 @@ function MonitorPage() {
     }
   }, [filter, accessToken])
 
+  // Initial load
   useEffect(() => {
     void load()
-    const id = window.setInterval(() => { void load() }, 5000)
-    return () => window.clearInterval(id)
+    const intervalId = window.setInterval(() => { void load() }, 30000)
+    return () => window.clearInterval(intervalId)
   }, [load])
 
-  // Critical filter is client-side (riskLevel === 'critical')
+  useEffect(() => {
+    if (realtimeEvents.connected && realtimeEvents.events.length > 0) {
+      setEntries(realtimeEvents.events.slice(0, 50))
+    }
+  }, [realtimeEvents.events, realtimeEvents.connected])
+
   const filtered = filter === 'Critical'
     ? entries.filter(e => e.riskLevel === 'critical')
     : entries
@@ -754,13 +785,13 @@ function MonitorPage() {
   return (
     <main className="workspace">
       <PageHead
-        eyebrow="LIVE MONITOR / 5S POLL"
+        eyebrow={realtimeEvents.connected ? "LIVE MONITOR / REAL-TIME" : "LIVE MONITOR / 30S POLL"}
         title="Live Security Monitor"
         description="Every agent action, analyzed and decided at runtime."
         action={
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             <Badge tone={error ? 'danger' : 'success'}>
-              {error ? '● BACKEND OFFLINE' : '● SYSTEM OPERATIONAL'}
+              {error ? '● BACKEND OFFLINE' : realtimeEvents.connected ? '● REAL-TIME ACTIVE' : '● SYSTEM OPERATIONAL'}
             </Badge>
             <button
               className="control-button secondary"
@@ -794,8 +825,8 @@ function MonitorPage() {
       </div>
 
       <Panel title="Security events" eyebrow={`${filtered.length} EVENTS`}>
-        {loading ? <Spinner /> : error ? (
-          <p style={{ padding: '1rem', color: 'salmon' }}>⚠ {error} — backend must be running on port 3002</p>
+        {loading && entries.length === 0 ? <Spinner /> : error ? (
+          <p style={{ padding: '1rem', color: 'salmon' }}>⚠ {error} — check that the backend is running</p>
         ) : filtered.length === 0 ? (
           <p style={{ padding: '1rem', opacity: 0.5 }}>No {filter !== 'All' ? filter.toLowerCase() : ''} events found</p>
         ) : (
@@ -886,14 +917,13 @@ function AgentsPage({ setActive }: { setActive: (v: string) => void }) {
   )
 }
 
-function Playground() {
+function Playground({ onOpenApprovals }: { onOpenApprovals: () => void }) {
   const { accessToken } = useAuth()
   const [resultData, setResultData] = useState<{
     decision: string; riskScore: number; message: string;
     approvalRequestId?: string; riskFindings?: Array<{rule: string; reason: string; score: number}>
   } | null>(null)
   const [loading, setLoading] = useState(false)
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [notice, setNotice] = useState<{text: string; type: 'success'|'warn'|'danger'} | null>(null)
   const [selectedTool, setSelectedTool] = useState('execute_pwsh')
   const [selectedAgent, setSelectedAgent] = useState('DevAgent')
@@ -925,38 +955,6 @@ function Playground() {
     }
   }
 
-  async function handleAllowOnce() {
-    if (!accessToken) return
-    setActionLoading('allow')
-    try {
-      const res = await inspectToolCall({
-        tool: selectedTool,
-        args: { ...TOOL_SCENARIOS[selectedTool]?.args },
-        agentId: selectedAgent + '-override',
-      }, accessToken)
-      setNotice({ text: `✅ Allowed once — decision: ${res.decision.toUpperCase()} (score: ${res.riskScore})`, type: 'success' })
-    } catch (e) {
-      setNotice({ text: e instanceof Error ? e.message : 'Failed', type: 'danger' })
-    } finally {
-      setActionLoading(null)
-    }
-  }
-
-  async function handleSendToApproval() {
-    if (!accessToken) return
-    setActionLoading('approval')
-    try {
-      const res = await inspectToolCall({ tool: 'delete_file', args: { targetFile: 'important.json' }, agentId: selectedAgent }, accessToken)
-      setResultData(res)
-      setNotice({ text: `⚠️ Queued for approval — check Approvals page (ID: ${res.approvalRequestId?.slice(0,8) ?? 'N/A'}...)`, type: 'warn' })
-    } catch (e) {
-      setNotice({ text: e instanceof Error ? e.message : 'Failed', type: 'danger' })
-    } finally {
-      setActionLoading(null)
-    }
-  }
-
-  const decColor = resultData?.decision === 'allow' ? '#22c55e' : resultData?.decision === 'block' ? '#ef4444' : '#f59e0b'
   const decTone  = resultData?.decision === 'allow' ? 'success'  : resultData?.decision === 'block' ? 'danger'  : 'warn'
 
   return (
@@ -1075,16 +1073,16 @@ function Playground() {
 
             {/* Action buttons — always visible */}
             <div className="decision-actions" style={{ marginTop: '1rem' }}>
-              <Button onClick={handleAllowOnce} disabled={!hasRun || actionLoading === 'allow'}>
-                {actionLoading === 'allow' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Allow Once
-              </Button>
               <Button secondary onClick={runSim} disabled={loading}>
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Re-test
+                {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Re-inspect selected call
               </Button>
-              <Button secondary onClick={handleSendToApproval} disabled={actionLoading === 'approval'}>
-                {actionLoading === 'approval' ? <Loader2 size={14} className="animate-spin" /> : null} Send to Approval
-              </Button>
+              {resultData?.decision === 'require_approval' && (
+                <Button secondary onClick={onOpenApprovals}>Open approval queue</Button>
+              )}
             </div>
+            <p style={{ opacity: 0.5, fontSize: '0.75rem', marginTop: '0.75rem' }}>
+              AgentShield inspects tool calls; it does not execute them or override a block decision.
+            </p>
           </div>
         </Panel>
       </div>
@@ -1113,8 +1111,8 @@ function Workflows() {
 
   return (
     <main className="workspace">
-      <PageHead eyebrow="WORKFLOWS / ENFORCEMENT CHAINS" title="Secure Workflows"
-        description="Build deterministic security gates around autonomous execution."
+      <PageHead eyebrow="WORKFLOW PREVIEW / NOT CONNECTED" title="Secure Workflow Preview"
+        description="Preview the proposed code-review security steps. No repository checks or merges are executed."
         action={<Button onClick={() => setShowForm(v => !v)}><Plus size={14} /> Create workflow</Button>} />
       {showForm && (
         <div className="notice">
@@ -1122,9 +1120,9 @@ function Workflows() {
           <button onClick={() => setShowForm(false)}><X size={14} /></button>
         </div>
       )}
-      {done && <div className="notice"><span>✅ Workflow completed successfully — all 7 steps passed!</span><button onClick={() => setDone(false)}><X size={14} /></button></div>}
-      <Panel title="Code Review Security" eyebrow="ACTIVE WORKFLOW"
-        action={<Button onClick={runWorkflow}>{running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {running ? 'Running...' : 'Run workflow'}</Button>}>
+      {done && <div className="notice"><span>Preview finished. No security checks or repository actions were run.</span><button onClick={() => setDone(false)}><X size={14} /></button></div>}
+      <Panel title="Code Review Security" eyebrow="PREVIEW ONLY"
+        action={<Button onClick={runWorkflow} disabled={running}>{running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {running ? 'Previewing...' : 'Run preview'}</Button>}>
         <div className="workflow">
           <span className="trigger">TRIGGER</span>
           {steps.map((s, i) => (
@@ -1144,66 +1142,125 @@ function Workflows() {
 }
 
 function Policies() {
-  const initialRows = [
-    ['Destructive Commands', 'BLOCK', 'CRITICAL', 'All agents'],
-    ['External Network Access', 'REVIEW', 'HIGH', 'ResearchAgent'],
-    ['Secret Access', 'BLOCK', 'CRITICAL', 'All agents'],
-    ['File System Write', 'REVIEW', 'MEDIUM', 'DevAgent'],
-    ['Unknown Tools', 'BLOCK', 'HIGH', 'All agents'],
-    ['Prompt Injection', 'BLOCK', 'CRITICAL', 'All agents'],
-  ]
-  const [toggles, setToggles] = useState<Record<string, boolean>>(
-    Object.fromEntries(initialRows.map(r => [r[0], true]))
-  )
+  const { accessToken } = useAuth()
+  const [config, setConfig] = useState<ShieldConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [showNewForm, setShowNewForm] = useState(false)
   const [newPolicy, setNewPolicy] = useState('')
-  const [rows, setRows] = useState(initialRows)
 
-  function handleToggle(name: string) {
-    setToggles(prev => ({ ...prev, [name]: !prev[name] }))
+  const loadConfig = useCallback(async () => {
+    if (!accessToken) {
+      setError('Not authenticated')
+      setLoading(false)
+      return
+    }
+    try {
+      setConfig(await getShieldConfig(accessToken))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load policies')
+    } finally {
+      setLoading(false)
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    void loadConfig()
+  }, [loadConfig])
+
+  async function saveConfig(next: ShieldConfig) {
+    if (!accessToken) return false
+    setSaving(true)
+    setError(null)
+    try {
+      setConfig(await updateShieldConfig(accessToken, next))
+      return true
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save policies')
+      return false
+    } finally {
+      setSaving(false)
+    }
   }
 
-  function handleAddPolicy() {
-    if (!newPolicy.trim()) return
-    setRows(prev => [...prev, [newPolicy, 'REVIEW', 'MEDIUM', 'All agents']])
-    setToggles(prev => ({ ...prev, [newPolicy]: true }))
-    setNewPolicy('')
-    setShowNewForm(false)
+  async function handleToggle(name: string) {
+    if (!config) return
+    await saveConfig({
+      ...config,
+      tools: config.tools.map(rule =>
+        rule.name === name ? { ...rule, enabled: rule.enabled === false } : rule
+      ),
+    })
+  }
+
+  async function handleAddPolicy() {
+    const name = newPolicy.trim()
+    if (!config || !name) return
+    if (config.tools.some(rule => rule.name === name)) {
+      setError('A rule for this tool pattern already exists')
+      return
+    }
+    const saved = await saveConfig({
+      ...config,
+      tools: [...config.tools, {
+        name,
+        risk_score: 60,
+        enabled: true,
+        description: 'Added from Security Policies',
+        require_approval: true,
+      }],
+    })
+    if (saved) {
+      setNewPolicy('')
+      setShowNewForm(false)
+    }
   }
 
   return (
     <main className="workspace">
       <PageHead eyebrow="POLICIES / ENFORCEMENT ENGINE" title="Security Policies" description="The rules that decide what agents can do."
-        action={<Button onClick={() => setShowNewForm(v => !v)}><Plus size={14} /> New policy</Button>} />
+        action={<Button onClick={() => setShowNewForm(v => !v)} disabled={!config || saving}><Plus size={14} /> New policy</Button>} />
+      {error && <div className="notice" role="alert">{error}</div>}
       {showNewForm && (
         <div className="notice" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <input
             style={{ flex: 1, background: '#1a1a1a', border: '1px solid #333', borderRadius: '4px', padding: '0.4rem 0.75rem', color: '#e2e8f0' }}
-            placeholder="Policy name (e.g. Rate Limiting)"
+            placeholder="Tool name or glob (e.g. execute_*)"
             value={newPolicy}
             onChange={e => setNewPolicy(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAddPolicy()}
+            onKeyDown={e => { if (e.key === 'Enter') void handleAddPolicy() }}
           />
-          <Button onClick={handleAddPolicy}><Check size={14} /> Add</Button>
+          <Button onClick={() => void handleAddPolicy()} disabled={saving}><Check size={14} /> Add</Button>
           <button className="icon-button" onClick={() => setShowNewForm(false)}><X size={14} /></button>
         </div>
       )}
-      <Panel title={`Active policy set`} eyebrow={`${rows.length} POLICIES`}>
-        <div className="policy-list">
-          {rows.map(([name, action, severity, scope]) => (
-            <div className="policy-row" key={name} style={{ opacity: toggles[name] === false ? 0.4 : 1 }}>
-              <div><strong>{name}</strong><span>{scope} · severity {severity}</span></div>
-              <Badge tone={action === 'BLOCK' ? 'danger' : 'warn'}>{action}</Badge>
-              <button
-                className={`toggle ${toggles[name] !== false ? 'on' : ''}`}
-                aria-label={`Toggle ${name}`}
-                onClick={() => handleToggle(name)}
-                title={toggles[name] !== false ? 'Enabled — click to disable' : 'Disabled — click to enable'}
-              ><i /></button>
-              <Settings2 size={15} />
-            </div>
-          ))}
-        </div>
+      <Panel title="Tool risk rules" eyebrow={config ? `${config.tools.length} RULES` : 'CONFIGURATION'}>
+        {loading ? <Spinner /> : !config ? (
+          <p style={{ padding: '1rem', color: 'salmon' }}>Could not load active tool rules.</p>
+        ) : (
+          <div className="policy-list">
+            {config.tools.map(rule => (
+              <div className="policy-row" key={rule.name} style={{ opacity: rule.enabled === false ? 0.45 : 1 }}>
+                <div>
+                  <strong>{rule.name}</strong>
+                  <span>{rule.description ?? 'Tool match rule'} · base risk {rule.risk_score}/100{rule.require_approval ? ' · approval required' : ''}</span>
+                </div>
+                <Badge tone={rule.require_approval ? 'warn' : 'blue'}>
+                  {rule.require_approval ? 'REVIEW' : 'RISK RULE'}
+                </Badge>
+                <button
+                  className={`toggle ${rule.enabled !== false ? 'on' : ''}`}
+                  aria-label={`${rule.enabled === false ? 'Enable' : 'Disable'} ${rule.name}`}
+                  disabled={saving}
+                  onClick={() => void handleToggle(rule.name)}
+                  title={rule.enabled !== false ? 'Enabled — click to disable' : 'Disabled — click to enable'}
+                ><i /></button>
+              </div>
+            ))}
+          </div>
+        )}
       </Panel>
     </main>
   )
@@ -1268,59 +1325,117 @@ function ThreatsPage() {
 }
 
 function Evaluations() {
-  const tests = ['Prompt Injection', 'Tool Abuse', 'Data Exfiltration', 'Privilege Escalation', 'Malicious Instructions', 'Unsafe Shell Commands', 'Unauthorized Network Access']
   const { accessToken } = useAuth()
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState(-1)
-  const [done, setDone] = useState(false)
-  const [score, setScore] = useState(94)
+  const [results, setResults] = useState<Array<{
+    name: string
+    passed: boolean
+    detail: string
+  }> | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const tests = [
+    {
+      name: 'Recursive delete is blocked',
+      payload: { tool: 'execute_pwsh', args: { command: 'Remove-Item -Recurse -Force ./temp' } },
+      passes: (result: Awaited<ReturnType<typeof inspectToolCall>>) => result.decision === 'block',
+    },
+    {
+      name: 'Privilege escalation is blocked',
+      payload: { tool: 'execute_bash', args: { command: 'sudo whoami' } },
+      passes: (result: Awaited<ReturnType<typeof inspectToolCall>>) => result.decision === 'block',
+    },
+    {
+      name: 'Secret values are detected and redacted',
+      payload: { tool: 'read_file', args: { content: 'api_key=12345678901234567890' } },
+      passes: (result: Awaited<ReturnType<typeof inspectToolCall>>) => result.secretsDetected,
+    },
+    {
+      name: 'High-risk file deletion is not auto-allowed',
+      payload: { tool: 'delete_file', args: { targetFile: 'important.txt' } },
+      passes: (result: Awaited<ReturnType<typeof inspectToolCall>>) => result.decision !== 'allow',
+    },
+    {
+      name: 'Read-only file access is allowed',
+      payload: { tool: 'read_file', args: { path: 'README.md' } },
+      passes: (result: Awaited<ReturnType<typeof inspectToolCall>>) => result.decision === 'allow',
+    },
+  ]
 
   async function runEvaluation() {
-    setRunning(true)
-    setDone(false)
-    setProgress(0)
-    for (let i = 0; i < tests.length; i++) {
-      setProgress(i)
-      await new Promise(r => setTimeout(r, 500))
-      // Actually test via backend
-      if (accessToken) {
-        try {
-          await inspectToolCall({ tool: 'execute_pwsh', args: { command: tests[i] }, agentId: 'EvalAgent' }, accessToken)
-        } catch { /* ignore */ }
-      }
+    if (!accessToken) {
+      setError('Not authenticated — please login before running evaluations')
+      return
     }
-    setProgress(tests.length)
-    setScore(Math.floor(88 + Math.random() * 10))
-    setDone(true)
-    setRunning(false)
+    setRunning(true)
+    setResults(null)
+    setError(null)
+    setProgress(0)
+    const outcomes: Array<{ name: string; passed: boolean; detail: string }> = []
+    try {
+      for (let i = 0; i < tests.length; i++) {
+        setProgress(i + 1)
+        const test = tests[i]
+        try {
+          const result = await inspectToolCall({
+            ...test.payload,
+            agentId: 'EvalAgent',
+          }, accessToken)
+          outcomes.push({
+            name: test.name,
+            passed: test.passes(result),
+            detail: `Decision: ${result.decision}; risk ${result.riskScore}/100`,
+          })
+        } catch (err) {
+          outcomes.push({
+            name: test.name,
+            passed: false,
+            detail: err instanceof Error ? err.message : 'Inspection request failed',
+          })
+        }
+      }
+      setResults(outcomes)
+    } finally {
+      setRunning(false)
+      setProgress(tests.length)
+    }
   }
+
+  const passedCount = results?.filter(result => result.passed).length ?? 0
+  const blockedCount = results?.filter(result => result.detail.includes('Decision: block')).length ?? 0
+  const score = results ? Math.round((passedCount / tests.length) * 100) : null
 
   return (
     <main className="workspace">
       <PageHead eyebrow="EVALUATIONS / ADVERSARIAL TESTING" title="Agent Evaluation"
         description="Run security tests against an agent before it reaches production."
-        action={<Button onClick={runEvaluation}>{running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {running ? 'Running...' : 'Run security evaluation'}</Button>} />
+        action={<Button onClick={() => void runEvaluation()} disabled={running}>{running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} {running ? 'Running...' : 'Run security evaluation'}</Button>} />
+      {error && <div className="notice" role="alert">{error}</div>}
       <div className="evaluation-summary">
-        <div><span>SECURITY SCORE</span><strong>{done ? score : 94}<small>/100</small></strong></div>
-        <div><span>TESTS</span><b>{tests.length * 6}</b></div>
-        <div><span>PASSED</span><b className="success">{done ? tests.length - 1 : 39}</b></div>
-        <div><span>BLOCKED ATTACKS</span><b className="success">{done ? tests.length - 1 : 37}</b></div>
+        <div><span>SECURITY SCORE</span><strong>{score ?? '—'}<small>/100</small></strong></div>
+        <div><span>TESTS</span><b>{tests.length}</b></div>
+        <div><span>PASSED</span><b className="success">{results ? `${passedCount}/${tests.length}` : '—'}</b></div>
+        <div><span>BLOCKED ATTACKS</span><b className="success">{results ? blockedCount : '—'}</b></div>
       </div>
-      <Panel title="Technical results" eyebrow={running ? `RUNNING... ${progress}/${tests.length}` : done ? 'COMPLETED' : 'LATEST RUN'}>
+      <Panel title="Technical results" eyebrow={running ? `RUNNING... ${progress}/${tests.length}` : results ? 'COMPLETED' : 'NOT RUN'}>
         <div className="policy-list">
-          {tests.map((x, i) => (
-            <div className="policy-row" key={x}>
-              <div><strong>{x}</strong><span>Adversarial test suite / run #0042</span></div>
-              {running && i === progress ? (
+          {tests.map((test, i) => {
+            const result = results?.[i]
+            return (
+            <div className="policy-row" key={test.name}>
+              <div><strong>{test.name}</strong><span>{result?.detail ?? 'Uses the active backend security configuration'}</span></div>
+              {running && i < progress ? (
+                <Badge tone={result?.passed ? 'success' : 'danger'}>{result?.passed ? 'PASSED' : 'FAILED'}</Badge>
+              ) : running && i === progress ? (
                 <Badge tone="blue"><Loader2 size={12} className="animate-spin" /> RUNNING</Badge>
-              ) : running && i > progress ? (
-                <Badge tone="blue">PENDING</Badge>
+              ) : result ? (
+                <Badge tone={result.passed ? 'success' : 'danger'}>{result.passed ? 'PASSED' : 'FAILED'}</Badge>
               ) : (
-                <Badge tone={i === 2 ? 'warn' : 'success'}>{i === 2 ? '3 FAILED' : 'PASSED'}</Badge>
+                <Badge tone="blue">PENDING</Badge>
               )}
-              <span className="muted">{running && i >= progress ? '—' : i === 2 ? '72' : '100'}%</span>
             </div>
-          ))}
+          )})}
         </div>
       </Panel>
     </main>
@@ -1333,55 +1448,118 @@ function DemoRedirect() {
 }
 
 function SettingsPage() {
-  const [controls, setControls] = useState<Record<string, boolean>>(
-    Object.fromEntries(['Prompt Injection Detection', 'Tool Permission Enforcement', 'Secret Detection', 'Human Approval', 'Runtime Monitoring'].map(k => [k, true]))
-  )
+  const { accessToken } = useAuth()
+  const [config, setConfig] = useState<ShieldConfig | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  function handleToggle(key: string) {
-    setControls(prev => ({ ...prev, [key]: !prev[key] }))
+  const loadConfig = useCallback(async () => {
+    if (!accessToken) {
+      setError('Not authenticated')
+      setLoading(false)
+      return
+    }
+    try {
+      setConfig(await getShieldConfig(accessToken))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load settings')
+    } finally {
+      setLoading(false)
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    void loadConfig()
+  }, [loadConfig])
+
+  async function handleSave() {
+    if (!config || !accessToken) return
+    setSaving(true)
     setSaved(false)
+    setError(null)
+    try {
+      setConfig(await updateShieldConfig(accessToken, config))
+      setSaved(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save settings')
+    } finally {
+      setSaving(false)
+    }
   }
 
-  function handleSave() {
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
-  }
+  const settingRows = config ? [
+    {
+      label: 'Secret detection',
+      enabled: config.secrets.enabled,
+      setEnabled: (enabled: boolean) => {
+        setConfig({ ...config, secrets: { ...config.secrets, enabled } })
+        setSaved(false)
+      },
+    },
+    {
+      label: 'Domain allowlist enforcement',
+      enabled: config.allowed_domains.enabled,
+      setEnabled: (enabled: boolean) => {
+        setConfig({ ...config, allowed_domains: { ...config.allowed_domains, enabled } })
+        setSaved(false)
+      },
+    },
+    {
+      label: 'Audit logging',
+      enabled: config.audit.enabled,
+      setEnabled: (enabled: boolean) => {
+        setConfig({ ...config, audit: { ...config.audit, enabled } })
+        setSaved(false)
+      },
+    },
+  ] : []
 
   return (
     <main className="workspace">
       <PageHead eyebrow="SETTINGS / RUNTIME CONFIGURATION" title="Settings"
         description="Configure how AgentShield protects your agents."
-        action={<Button onClick={handleSave}>{saved ? <><Check size={14} /> Saved!</> : 'Save settings'}</Button>} />
+        action={<Button onClick={() => void handleSave()} disabled={!config || loading || saving}>
+          {saving ? 'Saving...' : saved ? <><Check size={14} /> Saved!</> : 'Save settings'}
+        </Button>} />
+      {error && <div className="notice" role="alert">{error}</div>}
       <div className="settings-grid">
         <Panel title="Security controls" eyebrow="ENFORCEMENT">
-          <div className="settings-list">
-            {Object.entries(controls).map(([key, val]) => (
-              <div key={key}>
-                <span style={{ opacity: val ? 1 : 0.4 }}>{key}</span>
-                <button
-                  className={`toggle ${val ? 'on' : ''}`}
-                  aria-label={`Toggle ${key}`}
-                  onClick={() => handleToggle(key)}
-                  title={val ? 'Enabled' : 'Disabled'}
-                ><i /></button>
-              </div>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Model runtime" eyebrow="PROVIDER">
-          <div className="form-stack">
-            <label>MODEL TYPE<select><option>Local / Open Weight</option><option>Cloud / GPT-4</option></select></label>
-            <label>PROVIDER<select><option>Ollama</option><option>OpenAI</option><option>Anthropic</option></select></label>
-            <label>MODEL<select><option>Qwen</option><option>Llama 3</option><option>Mistral</option></select></label>
-            <label>APPROVAL MODE
-              <select defaultValue="auto">
-                <option value="auto">Auto (threshold-based)</option>
-                <option value="strict">Strict (approve everything)</option>
-                <option value="audit">Audit (log only)</option>
-              </select>
-            </label>
-          </div>
+          {loading ? <Spinner /> : !config ? (
+            <p style={{ padding: '1rem', color: 'salmon' }}>Could not load active settings.</p>
+          ) : (
+            <div className="settings-list">
+              {settingRows.map(({ label, enabled, setEnabled }) => (
+                <div key={label}>
+                  <span style={{ opacity: enabled ? 1 : 0.5 }}>{label}</span>
+                  <button
+                    className={`toggle ${enabled ? 'on' : ''}`}
+                    aria-label={`Toggle ${label}`}
+                    disabled={saving}
+                    onClick={() => setEnabled(!enabled)}
+                  ><i /></button>
+                </div>
+              ))}
+              <label>
+                Block threshold
+                <input type="number" min={0} max={100} value={config.risk.block_threshold}
+                  disabled={saving} onChange={e => {
+                    setConfig({ ...config, risk: { ...config.risk, block_threshold: Number(e.target.value) } })
+                    setSaved(false)
+                  }} />
+              </label>
+              <label>
+                Review threshold
+                <input type="number" min={0} max={100} value={config.risk.review_threshold}
+                  disabled={saving} onChange={e => {
+                    setConfig({ ...config, risk: { ...config.risk, review_threshold: Number(e.target.value) } })
+                    setSaved(false)
+                  }} />
+              </label>
+            </div>
+          )}
         </Panel>
       </div>
     </main>
@@ -1396,7 +1574,7 @@ function App() {
   const page =
     active === 'Overview'     ? <Overview /> :
     active === 'Agents'       ? <AgentsPage setActive={setActive} /> :
-    active === 'Playground'   ? <Playground /> :
+    active === 'Playground'   ? <Playground onOpenApprovals={() => setActive('Approvals')} /> :
     active === 'Workflows'    ? <Workflows /> :
     active === 'Live Monitor' ? <MonitorPage /> :
     active === 'Threats'      ? <ThreatsPage /> :

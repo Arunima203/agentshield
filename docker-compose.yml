@@ -1,48 +1,21 @@
-version: '3.8'
-
 # AgentShield Development Docker Compose
-# Quick local setup: PostgreSQL, Backend, LLM Service
+# Quick local setup: Backend, LLM Service
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:15-alpine
-    container_name: agentshield-postgres-dev
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: agentshield
-      POSTGRES_USER: agentshield
-      POSTGRES_PASSWORD: agentshield_password
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - agentshield
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agentshield"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # Backend Node.js Service
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: agentshield-backend-dev
     ports:
-      - "3000:3000"
+      - "3002:3002"
     environment:
       NODE_ENV: development
-      PORT: 3000
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: agentshield
-      DB_USER: agentshield
-      DB_PASSWORD: agentshield_password
-      DB_POOL_SIZE: 5
-      LLM_SERVICE_URL: http://llm-api:8000
+      PORT: 3002
+      HOST: 0.0.0.0
+      DB_PATH: /app/data/agentshield.db
+      LLM_API_URL: http://llm-api:8000
       ENABLE_LLM: "true"
       APPROVAL_MODE: auto
       LOG_LEVEL: debug
@@ -51,14 +24,12 @@ services:
     volumes:
       - ./backend/src:/app/src
       - ./backend/agentshield.config.yaml:/app/agentshield.config.yaml
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - backend-data:/app/data
     networks:
       - agentshield
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -116,8 +87,8 @@ services:
       - llm
 
 volumes:
-  postgres-data:
   ollama-data:
+  backend-data:
 
 networks:
   agentshield:

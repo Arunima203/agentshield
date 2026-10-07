@@ -183,7 +183,7 @@ app/page.tsx ─ Dashboard (all calls include token)
 | Login endpoint | ✅ | Validates credentials, returns tokens |
 | Token generation | ✅ | JWT with separate access/refresh |
 | Token verification | ✅ | /auth/verify endpoint |
-| Password security | ✅ | bcrypt cost factor 10 |
+| Password security | ✅ | bcrypt cost factor 12 |
 | Token expiry | ✅ | 15min access, 7day refresh |
 | Frontend auth | ✅ | Context-based with localStorage |
 | API integration | ✅ | All endpoints protected with JWT |
@@ -206,7 +206,7 @@ Before deploying to production:
 
 3. **Database Backup** (MEDIUM PRIORITY)
    - Set up automated SQLite backups
-   - Or migrate to PostgreSQL for production
+   - Back up the persistent SQLite database (see `DEPLOYMENT_GUIDE.md`)
 
 4. **Rate Limiting** (MEDIUM PRIORITY)
    - Add rate limiting on /auth/login to prevent brute force

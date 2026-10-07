@@ -7,14 +7,86 @@ import {
   verifyRefreshToken,
   refreshAccessToken,
 } from "../tokenManager";
+import { logger } from "../logger";
 
 const router = Router();
+const CTX = "Auth";
 
-// Demo users — matches Deepak's frontend demo credentials
-const DEMO_USERS: Record<string, { password: string; role: "admin" | "approver" | "auditor" | "agent"; name: string; email: string }> = {
+type AuthUser = {
+  password: string;
+  role: "admin" | "approver" | "auditor" | "agent";
+  name: string;
+  email: string;
+};
+
+const USERS: Record<string, AuthUser> = {
   admin: { password: "AgentShield29241", role: "admin", name: "Admin User", email: "admin@agentshield.local" },
   operator: { password: "security-ops", role: "approver", name: "Security Operator", email: "operator@agentshield.local" },
 };
+
+/**
+ * POST /auth/register
+ */
+router.post("/register", (req: Request, res: Response) => {
+  const { username, password, role = "operator" } = req.body as {
+    username?: string;
+    password?: string;
+    role?: string;
+  };
+
+  if (!username?.trim() || !password) {
+    res.status(400).json({ error: "Username and password are required" });
+    return;
+  }
+  if (password.length < 6) {
+    res.status(400).json({ error: "Password must be at least 6 characters" });
+    return;
+  }
+
+  const key = username.toLowerCase().trim();
+
+  if (USERS[key]) {
+    res.status(409).json({ error: "Username already taken" });
+    return;
+  }
+
+  const roleMap: Record<string, AuthUser["role"]> = {
+    operator: "approver",
+    approver: "approver",
+    auditor: "auditor",
+    agent: "agent",
+  };
+  const userRole = roleMap[role];
+  if (!userRole) {
+    res.status(400).json({ error: "Invalid role" });
+    return;
+  }
+
+  const user: AuthUser = {
+    password,
+    role: userRole,
+    name: username.trim(),
+    email: `${key}@agentshield.local`,
+  };
+  const tokens = createTokenPair({
+    userId: key,
+    email: user.email,
+    role: user.role,
+  });
+  USERS[key] = user;
+  logger.info(CTX, `New user registered: ${key} (${userRole})`);
+
+  res.status(201).json({
+    message: "Account created successfully",
+    access_token: tokens.accessToken,
+    accessToken: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    refreshToken: tokens.refreshToken,
+    token_type: "Bearer",
+    expires_in: 900,
+    user: { id: key, username: key, email: user.email, role: user.role, name: user.name },
+  });
+});
 
 /**
  * POST /auth/login
@@ -34,7 +106,7 @@ router.post(
     }
 
     const userKey = (username ?? email ?? "").toLowerCase().split("@")[0]; // handle email format too
-    const found = DEMO_USERS[userKey];
+    const found = USERS[userKey];
 
     if (!found || found.password !== password) {
       throw ErrorFactory.unauthorized("Invalid credentials");

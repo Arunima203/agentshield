@@ -29,6 +29,15 @@ async function request<T>(
     headers: { ...headers(token), ...(options.headers ?? {}) },
   });
 
+  if (res.status === 401) {
+    // Token expired — clear storage and redirect to login
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('agentshield_auth')
+      window.location.href = '/login'
+    }
+    throw new Error('Session expired — please login again')
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error ?? `Request failed: ${res.status}`);

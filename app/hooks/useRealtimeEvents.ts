@@ -35,7 +35,7 @@ export interface RealtimeEventHookState<T> {
 export function useRealtimeEvents<T = any>(
   options: RealtimeSubscriptionOptions
 ): RealtimeEventHookState<T> {
-  const { user, accessToken } = useAuth();
+  const { username, accessToken } = useAuth();
   const [events, setEvents] = useState<T[]>([]);
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string>();
@@ -47,7 +47,7 @@ export function useRealtimeEvents<T = any>(
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3000';
 
   const subscribe = useCallback(() => {
-    if (!user || !accessToken) {
+    if (!username || !accessToken) {
       setConnectionError('Not authenticated');
       return;
     }
@@ -128,7 +128,16 @@ export function useRealtimeEvents<T = any>(
       setConnectionError(message);
       options.onError?.(message);
     }
-  }, [user, accessToken, options, backendUrl]);
+  }, [
+    username,
+    accessToken,
+    options.room,
+    options.filters,
+    options.onConnect,
+    options.onDisconnect,
+    options.onError,
+    backendUrl,
+  ]);
 
   const unsubscribe = useCallback(() => {
     if (socketRef.current) {
@@ -138,7 +147,7 @@ export function useRealtimeEvents<T = any>(
 
   // Connect on mount
   useEffect(() => {
-    if (user && accessToken) {
+    if (username && accessToken) {
       subscribe();
     }
 
@@ -149,7 +158,7 @@ export function useRealtimeEvents<T = any>(
         socketRef.current = null;
       }
     };
-  }, [user, accessToken, subscribe]);
+  }, [username, accessToken, subscribe]);
 
   return {
     events,

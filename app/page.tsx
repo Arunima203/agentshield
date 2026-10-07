@@ -61,15 +61,39 @@ function Logo() {
 }
 
 function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
-  const { username, logout } = useAuth()
+  const { username, logout, accessToken } = useAuth()
   const router = useRouter()
   const [showNotifications, setShowNotifications] = useState(false)
-  const [notifications] = useState([
-    { id: 1, type: 'warn',    text: '4 approvals pending review',       time: 'Just now' },
-    { id: 2, type: 'danger',  text: 'High risk tool call blocked',       time: '2 min ago' },
-    { id: 3, type: 'success', text: 'DevAgent inspection passed',        time: '5 min ago' },
-    { id: 4, type: 'warn',    text: 'Secret detected and redacted',      time: '12 min ago' },
-  ])
+  const [notifications, setNotifications] = useState<Array<{id: string; type: string; text: string; time: string}>>([])
+  const [unread, setUnread] = useState(0)
+
+  // Load live notifications from backend audit log
+  const loadNotifications = useCallback(async () => {
+    if (!accessToken) return
+    try {
+      const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3002'
+      const res = await fetch(`${BASE_URL}/audit?limit=5`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      const entries = data.entries ?? []
+      const mapped = entries.map((e: AuditEntry) => ({
+        id: e.id,
+        type: e.decision === 'block' ? 'danger' : e.decision === 'require_approval' ? 'warn' : 'success',
+        text: `${e.decision === 'block' ? '🚫 Blocked' : e.decision === 'require_approval' ? '⚠️ Review' : '✅ Allowed'}: ${e.tool} by ${e.agentId ?? 'agent'} (risk ${e.riskScore})`,
+        time: new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }))
+      setNotifications(mapped)
+      setUnread(mapped.length)
+    } catch { /* silent */ }
+  }, [accessToken])
+
+  useEffect(() => {
+    void loadNotifications()
+    const id = window.setInterval(loadNotifications, 10000)
+    return () => window.clearInterval(id)
+  }, [loadNotifications])
 
   const handleLogout = () => {
     logout()
@@ -90,61 +114,60 @@ function Header({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => voi
             </span>
           )}
 
-          {/* Notification Bell */}
+          {/* Live Notification Bell */}
           <div style={{ position: 'relative' }}>
             <button
               className="icon-button"
               aria-label="Notifications"
-              onClick={() => setShowNotifications(v => !v)}
-              style={{ position: 'relative' }}
+              onClick={() => { setShowNotifications(v => !v); setUnread(0); void loadNotifications() }}
             >
               <Bell size={17} />
-              {notifications.length > 0 && (
+              {unread > 0 && (
                 <span style={{
                   position: 'absolute', top: -4, right: -4,
                   background: '#ef4444', borderRadius: '50%',
-                  width: 14, height: 14, fontSize: 9,
+                  width: 15, height: 15, fontSize: 9,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   color: 'white', fontWeight: 700,
-                }}>{notifications.length}</span>
+                }}>{unread > 9 ? '9+' : unread}</span>
               )}
             </button>
 
-            {/* Notification Panel */}
             {showNotifications && (
               <div style={{
                 position: 'absolute', top: '110%', right: 0, zIndex: 1000,
                 background: '#0f172a', border: '1px solid #1e293b',
-                borderRadius: 10, width: 300, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+                borderRadius: 10, width: 320, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
               }}>
                 <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1e293b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Notifications</span>
-                  <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><X size={14} /></button>
+                  <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Live Notifications</span>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <button onClick={() => void loadNotifications()} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><RefreshCw size={12} /></button>
+                    <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer' }}><X size={14} /></button>
+                  </div>
                 </div>
-                {notifications.map(n => (
-                  <div key={n.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #0f172a', display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-                    <div style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 4, flexShrink: 0, background: n.type === 'danger' ? '#ef4444' : n.type === 'warn' ? '#f59e0b' : '#22c55e' }} />
+                {notifications.length === 0 ? (
+                  <p style={{ padding: '1rem', opacity: 0.4, fontSize: '0.8rem', textAlign: 'center' }}>No recent events</p>
+                ) : notifications.map(n => (
+                  <div key={n.id} style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #0f1929', display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0, background: n.type === 'danger' ? '#ef4444' : n.type === 'warn' ? '#f59e0b' : '#22c55e' }} />
                     <div style={{ flex: 1 }}>
-                      <p style={{ margin: 0, fontSize: '0.8rem', color: '#e2e8f0' }}>{n.text}</p>
-                      <span style={{ fontSize: '0.7rem', color: '#64748b' }}>{n.time}</span>
+                      <p style={{ margin: 0, fontSize: '0.78rem', color: '#e2e8f0', lineHeight: 1.4 }}>{n.text}</p>
+                      <span style={{ fontSize: '0.68rem', color: '#64748b' }}>{n.time}</span>
                     </div>
                   </div>
                 ))}
-                <div style={{ padding: '0.5rem 1rem', textAlign: 'center' }}>
-                  <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#3b82f6', fontSize: '0.8rem', cursor: 'pointer' }}>Mark all as read</button>
+                <div style={{ padding: '0.5rem 1rem', textAlign: 'center', borderTop: '1px solid #1e293b' }}>
+                  <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', color: '#3b82f6', fontSize: '0.8rem', cursor: 'pointer' }}>
+                    View all in Live Monitor →
+                  </button>
                 </div>
               </div>
             )}
           </div>
 
           {/* Logout */}
-          <button
-            className="icon-button"
-            aria-label="Logout"
-            onClick={handleLogout}
-            title="Logout"
-            style={{ color: '#f87171' }}
-          >
+          <button className="icon-button" aria-label="Logout" onClick={handleLogout} title="Logout" style={{ color: '#f87171' }}>
             <LogOut size={17} />
           </button>
         </div>
@@ -181,8 +204,21 @@ function Drawer({ open, setOpen, active, setActive }: {
   )
 }
 
-function Button({ children, onClick, secondary = false }: { children: React.ReactNode; onClick?: () => void; secondary?: boolean }) {
-  return <button className={secondary ? 'control-button secondary' : 'control-button'} onClick={onClick}>{children}</button>
+function Button({ children, onClick, secondary = false, disabled = false }: {
+  children: React.ReactNode
+  onClick?: () => void
+  secondary?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <button
+      className={secondary ? 'control-button secondary' : 'control-button'}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      {children}
+    </button>
+  )
 }
 
 function Badge({ children, tone = 'blue' }: { children: React.ReactNode; tone?: string }) {
@@ -458,38 +494,44 @@ function MonitorPage() {
   const { accessToken } = useAuth()
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [filter, setFilter] = useState('All')
   const [error, setError] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
-    if (!accessToken) {
-      setError('Not authenticated')
-      return
-    }
+  const load = useCallback(async (showRefresh = false) => {
+    if (!accessToken) { setError('Not authenticated'); return }
+    if (showRefresh) setRefreshing(true)
 
     try {
       setError(null)
+      // For Blocked/Critical/Review filters send the right decision param
       const decisionMap: Record<string, string> = {
-        Allowed: 'allow', Blocked: 'block', Review: 'require_approval',
+        Allowed: 'allow',
+        Blocked: 'block',
+        Review: 'require_approval',
       }
       const data = await getAuditLog(accessToken, {
-        decision: decisionMap[filter],
-        limit: 50,
+        decision: decisionMap[filter],   // undefined for All/Critical → fetch all
+        limit: 100,
       })
       setEntries(data.entries)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Backend unreachable')
+      const msg = err instanceof Error ? err.message : 'Backend unreachable'
+      if (msg.includes('expired') || msg.includes('401')) { window.location.href = '/login'; return }
+      setError(msg)
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }, [filter, accessToken])
 
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
-    return () => window.clearInterval(intervalId)
+    const id = window.setInterval(() => { void load() }, 5000)
+    return () => window.clearInterval(id)
   }, [load])
 
+  // Critical filter is client-side (riskLevel === 'critical')
   const filtered = filter === 'Critical'
     ? entries.filter(e => e.riskLevel === 'critical')
     : entries
@@ -502,23 +544,45 @@ function MonitorPage() {
         description="Every agent action, analyzed and decided at runtime."
         action={
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <Badge tone={error ? 'danger' : 'success'}>{error ? '● BACKEND OFFLINE' : '● SYSTEM OPERATIONAL'}</Badge>
-            <button className="control-button secondary" onClick={load}><RefreshCw size={14} /></button>
+            <Badge tone={error ? 'danger' : 'success'}>
+              {error ? '● BACKEND OFFLINE' : '● SYSTEM OPERATIONAL'}
+            </Badge>
+            <button
+              className="control-button secondary"
+              onClick={() => load(true)}
+              disabled={refreshing}
+              title="Refresh"
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              {refreshing ? ' Refreshing...' : ' Refresh'}
+            </button>
           </div>
         }
       />
 
       <div className="filter-bar">
         {['All', 'Allowed', 'Review', 'Blocked', 'Critical'].map(x => (
-          <button key={x} className={`filter-chip${filter === x ? ' active' : ''}`} onClick={() => setFilter(x)}>{x}</button>
+          <button
+            key={x}
+            className={`filter-chip${filter === x ? ' active' : ''}`}
+            onClick={() => setFilter(x)}
+          >
+            {x}
+            {x === 'Blocked' && <span style={{ marginLeft: 4, background: '#ef444433', borderRadius: 4, padding: '0 4px', fontSize: '0.7rem' }}>
+              {entries.filter(e => e.decision === 'block').length}
+            </span>}
+            {x === 'Critical' && <span style={{ marginLeft: 4, background: '#f59e0b33', borderRadius: 4, padding: '0 4px', fontSize: '0.7rem' }}>
+              {entries.filter(e => e.riskLevel === 'critical').length}
+            </span>}
+          </button>
         ))}
       </div>
 
       <Panel title="Security events" eyebrow={`${filtered.length} EVENTS`}>
         {loading ? <Spinner /> : error ? (
-          <p style={{ padding: '1rem', color: 'salmon' }}>⚠ {error} — make sure the backend is running on port 3000</p>
+          <p style={{ padding: '1rem', color: 'salmon' }}>⚠ {error} — backend must be running on port 3002</p>
         ) : filtered.length === 0 ? (
-          <p style={{ padding: '1rem', opacity: 0.5 }}>No events found</p>
+          <p style={{ padding: '1rem', opacity: 0.5 }}>No {filter !== 'All' ? filter.toLowerCase() : ''} events found</p>
         ) : (
           <div className="monitor-list">
             {filtered.map(e => (
@@ -527,8 +591,8 @@ function MonitorPage() {
                 <strong>{e.agentId ?? '—'}</strong>
                 <code>{e.tool}</code>
                 <span>{e.riskLevel}</span>
-                <Badge tone={decisionTone(e.decision) === 'block' ? 'danger' : decisionTone(e.decision) === 'review' ? 'warn' : 'success'}>
-                  {e.decision.toUpperCase()}
+                <Badge tone={e.decision === 'block' ? 'danger' : e.decision === 'require_approval' ? 'warn' : 'success'}>
+                  {e.decision === 'require_approval' ? 'REVIEW' : e.decision.toUpperCase()}
                 </Badge>
                 <b>RISK {e.riskScore}</b>
               </div>
@@ -607,61 +671,76 @@ function AgentsPage({ setActive }: { setActive: (v: string) => void }) {
 
 function Playground() {
   const { accessToken } = useAuth()
-  const [result, setResult] = useState<string | null>(null)
-  const [resultData, setResultData] = useState<{ decision: string; riskScore: number; message: string } | null>(null)
+  const [resultData, setResultData] = useState<{
+    decision: string; riskScore: number; message: string;
+    approvalRequestId?: string; riskFindings?: Array<{rule: string; reason: string; score: number}>
+  } | null>(null)
   const [loading, setLoading] = useState(false)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{text: string; type: 'success'|'warn'|'danger'} | null>(null)
   const [selectedTool, setSelectedTool] = useState('execute_pwsh')
   const [selectedAgent, setSelectedAgent] = useState('DevAgent')
-  const [allowOnceDone, setAllowOnceDone] = useState(false)
+  const [hasRun, setHasRun] = useState(false)
 
   const TOOL_SCENARIOS: Record<string, { args: Record<string, unknown>; description: string }> = {
-    execute_pwsh:  { args: { command: 'rm -rf ./src' }, description: 'Destructive shell command' },
-    read_file:     { args: { path: 'package.json' }, description: 'Read config file' },
-    fs_write:      { args: { path: 'output.txt', text: 'hello world' }, description: 'Write to file' },
-    delete_file:   { args: { targetFile: 'config.json' }, description: 'Delete a file' },
-    web_fetch:     { args: { url: 'https://api.example.com/data' }, description: 'External API call' },
+    execute_pwsh: { args: { command: 'rm -rf ./src' },            description: 'Destructive shell command' },
+    read_file:    { args: { path: 'package.json' },               description: 'Read config file' },
+    fs_write:     { args: { path: 'output.txt', text: 'hello' },  description: 'Write to file' },
+    delete_file:  { args: { targetFile: 'config.json' },          description: 'Delete a file' },
+    web_fetch:    { args: { url: 'https://api.example.com/data' }, description: 'External API call' },
   }
 
   async function runSim() {
-    if (!accessToken) { setResult('Error: Not authenticated'); return }
+    if (!accessToken) { setNotice({ text: 'Not authenticated — please login', type: 'danger' }); return }
     setLoading(true)
-    setAllowOnceDone(false)
+    setNotice(null)
+    setResultData(null)
     try {
-      const scenario = TOOL_SCENARIOS[selectedTool] ?? TOOL_SCENARIOS.execute_pwsh
+      const scenario = TOOL_SCENARIOS[selectedTool]
       const res = await inspectToolCall({ tool: selectedTool, args: scenario.args, agentId: selectedAgent }, accessToken)
       setResultData(res)
-      setResult(`Decision: ${res.decision.toUpperCase()} · Score: ${res.riskScore} · ${res.message}`)
+      setHasRun(true)
     } catch (e) {
-      setResult(`Error: ${e instanceof Error ? e.message : 'Backend offline'}`)
+      const msg = e instanceof Error ? e.message : 'Backend offline'
+      setNotice({ text: `Error: ${msg}`, type: 'danger' })
     } finally {
       setLoading(false)
     }
   }
 
   async function handleAllowOnce() {
-    if (!accessToken || !resultData) return
-    // Re-inspect with audit mode override by sending a different agentId marker
+    if (!accessToken) return
+    setActionLoading('allow')
     try {
-      const res = await inspectToolCall({ tool: selectedTool, args: { ...TOOL_SCENARIOS[selectedTool]?.args, _override: 'allow_once' }, agentId: selectedAgent }, accessToken)
-      setAllowOnceDone(true)
-      setResult(`✅ Allowed once — Decision: ${res.decision.toUpperCase()} · Score: ${res.riskScore}`)
+      const res = await inspectToolCall({
+        tool: selectedTool,
+        args: { ...TOOL_SCENARIOS[selectedTool]?.args },
+        agentId: selectedAgent + '-override',
+      }, accessToken)
+      setNotice({ text: `✅ Allowed once — decision: ${res.decision.toUpperCase()} (score: ${res.riskScore})`, type: 'success' })
     } catch (e) {
-      setResult(`Error: ${e instanceof Error ? e.message : 'Failed'}`)
+      setNotice({ text: e instanceof Error ? e.message : 'Failed', type: 'danger' })
+    } finally {
+      setActionLoading(null)
     }
   }
 
-  async function handleRequireApproval() {
+  async function handleSendToApproval() {
     if (!accessToken) return
+    setActionLoading('approval')
     try {
       const res = await inspectToolCall({ tool: 'delete_file', args: { targetFile: 'important.json' }, agentId: selectedAgent }, accessToken)
       setResultData(res)
-      setResult(`⚠️ Queued for approval — ID: ${res.approvalRequestId ?? 'N/A'} · Score: ${res.riskScore}`)
+      setNotice({ text: `⚠️ Queued for approval — check Approvals page (ID: ${res.approvalRequestId?.slice(0,8) ?? 'N/A'}...)`, type: 'warn' })
     } catch (e) {
-      setResult(`Error: ${e instanceof Error ? e.message : 'Failed'}`)
+      setNotice({ text: e instanceof Error ? e.message : 'Failed', type: 'danger' })
+    } finally {
+      setActionLoading(null)
     }
   }
 
   const decColor = resultData?.decision === 'allow' ? '#22c55e' : resultData?.decision === 'block' ? '#ef4444' : '#f59e0b'
+  const decTone  = resultData?.decision === 'allow' ? 'success'  : resultData?.decision === 'block' ? 'danger'  : 'warn'
 
   return (
     <main className="workspace">
@@ -669,10 +748,23 @@ function Playground() {
         eyebrow="PLAYGROUND / POLICY SIMULATION"
         title="Agent Playground"
         description="Test agent actions and inspect every security decision in real time."
-        action={<Button onClick={runSim}>{loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Run simulation</Button>}
+        action={
+          <Button onClick={runSim}>
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+            {loading ? ' Running...' : ' Run simulation'}
+          </Button>
+        }
       />
-      {result && <div className="notice" style={{ borderColor: decColor }}><span>{result}</span></div>}
+
+      {notice && (
+        <div className="notice" style={{ borderColor: notice.type === 'success' ? '#22c55e' : notice.type === 'danger' ? '#ef4444' : '#f59e0b' }}>
+          <span>{notice.text}</span>
+          <button onClick={() => setNotice(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', marginLeft: '0.5rem' }}><X size={14} /></button>
+        </div>
+      )}
+
       <div className="playground-grid">
+        {/* Config panel */}
         <Panel title="Agent configuration" eyebrow="CONFIGURATION">
           <div className="form-stack">
             <label>AGENT
@@ -683,14 +775,14 @@ function Playground() {
               </select>
             </label>
             <label>TOOL TO TEST
-              <select value={selectedTool} onChange={e => setSelectedTool(e.target.value)}>
+              <select value={selectedTool} onChange={e => { setSelectedTool(e.target.value); setResultData(null); setHasRun(false) }}>
                 {Object.entries(TOOL_SCENARIOS).map(([k, v]) => (
                   <option key={k} value={k}>{k} — {v.description}</option>
                 ))}
               </select>
             </label>
             <label>MODEL<select><option>Qwen / Local Model</option></select></label>
-            <label>SYSTEM INSTRUCTIONS<textarea defaultValue={'You are a coding assistant...'} /></label>
+            <label>SYSTEM INSTRUCTIONS<textarea defaultValue="You are a coding assistant..." /></label>
             <fieldset>
               <legend>TOOLS</legend>
               {['read_file', 'search_web', 'execute_command', 'write_file'].map(t => (
@@ -699,48 +791,82 @@ function Playground() {
             </fieldset>
           </div>
         </Panel>
+
+        {/* Execution stream */}
         <Panel title="Execution stream" eyebrow="LIVE AGENT EXECUTION">
           <div className="conversation">
-            <div className="chat-line"><span>USER</span><p>Run: {selectedTool}</p></div>
-            <div className="chat-line agent"><span>AGENT ({selectedAgent})</span><p>Requesting tool execution via AgentShield...</p></div>
-            {resultData && (
+            <div className="chat-line"><span>USER</span><p>Test tool: {selectedTool}</p></div>
+            <div className="chat-line agent"><span>AGENT ({selectedAgent})</span><p>Sending tool call to AgentShield for inspection...</p></div>
+            {loading && (
+              <div className="tool-call">
+                <span>TOOL CALL</span>
+                <code>{selectedTool}(...)</code>
+                <Badge tone="blue"><Loader2 size={12} className="animate-spin" /> INSPECTING</Badge>
+              </div>
+            )}
+            {!loading && hasRun && resultData && (
               <div className={`tool-call ${resultData.decision === 'block' ? 'blocked' : ''}`}>
                 <span>TOOL CALL</span>
                 <code>{selectedTool}({JSON.stringify(TOOL_SCENARIOS[selectedTool]?.args ?? {})})</code>
-                <Badge tone={resultData.decision === 'allow' ? 'success' : resultData.decision === 'block' ? 'danger' : 'warn'}>
-                  {resultData.decision.toUpperCase()} · RISK {resultData.riskScore}
+                <Badge tone={decTone}>
+                  {resultData.decision === 'require_approval' ? 'REVIEW' : resultData.decision.toUpperCase()} · RISK {resultData.riskScore}
                 </Badge>
               </div>
             )}
-            {!resultData && <div className="tool-call"><span>TOOL CALL</span><code>Click "Run simulation" to test</code></div>}
+            {!loading && !hasRun && (
+              <div className="tool-call">
+                <span>AWAITING</span>
+                <code>Click "Run simulation" to inspect this tool call</code>
+              </div>
+            )}
           </div>
         </Panel>
-        <Panel title={resultData ? `${resultData.riskScore} / 100` : '— / 100'} eyebrow="SECURITY DECISION">
+
+        {/* Security decision */}
+        <Panel title={hasRun && resultData ? `${resultData.riskScore} / 100` : '— / 100'} eyebrow="SECURITY DECISION">
           <div className="decision-panel">
-            {resultData ? (
+            {!hasRun ? (
+              <div style={{ opacity: 0.4, textAlign: 'center', padding: '2rem 1rem' }}>
+                <Play size={32} style={{ margin: '0 auto 0.75rem' }} />
+                <p style={{ margin: 0, fontSize: '0.85rem' }}>Run a simulation to see the security decision</p>
+              </div>
+            ) : loading ? (
+              <div style={{ textAlign: 'center', padding: '2rem 1rem' }}>
+                <Loader2 size={32} className="animate-spin" style={{ margin: '0 auto 0.75rem' }} />
+                <p style={{ margin: 0, opacity: 0.5, fontSize: '0.85rem' }}>Inspecting tool call...</p>
+              </div>
+            ) : resultData ? (
               <>
-                <Badge tone={resultData.decision === 'allow' ? 'success' : resultData.decision === 'block' ? 'danger' : 'warn'}>
-                  {resultData.decision.toUpperCase()}
+                <Badge tone={decTone}>
+                  {resultData.decision === 'require_approval' ? '⚠️ REQUIRES APPROVAL' : resultData.decision === 'block' ? '🚫 BLOCK' : '✅ ALLOW'}
                 </Badge>
-                <h3>{resultData.decision === 'block' ? 'High risk action intercepted' : resultData.decision === 'require_approval' ? 'Awaiting human approval' : 'Action approved'}</h3>
-                <p style={{ opacity: 0.7, fontSize: '0.85rem' }}>{resultData.message}</p>
+                <h3 style={{ margin: '0.75rem 0 0.5rem' }}>
+                  {resultData.decision === 'block' ? 'High risk action intercepted'
+                   : resultData.decision === 'require_approval' ? 'Awaiting human approval'
+                   : 'Action approved to execute'}
+                </h3>
+                <p style={{ opacity: 0.6, fontSize: '0.8rem', margin: '0 0 1rem' }}>{resultData.message}</p>
+                {resultData.riskFindings && resultData.riskFindings.length > 0 && (
+                  <ul style={{ margin: '0 0 1rem', paddingLeft: '1.2rem', fontSize: '0.8rem' }}>
+                    {resultData.riskFindings.slice(0, 3).map((f, i) => (
+                      <li key={i} style={{ color: '#fca5a5', marginBottom: '0.2rem' }}>{f.reason}</li>
+                    ))}
+                  </ul>
+                )}
               </>
-            ) : (
-              <>
-                <Badge tone="danger">BLOCK</Badge>
-                <h3>High risk action intercepted</h3>
-                <ul>
-                  <li>Destructive filesystem operation</li>
-                  <li>Irreversible action</li>
-                  <li>Outside permitted tool policy</li>
-                </ul>
-                <p>Suggested safer action: <strong>Remove only the obsolete files after confirming their paths.</strong></p>
-              </>
-            )}
-            <div className="decision-actions">
-              <Button onClick={handleAllowOnce}>{allowOnceDone ? <Check size={14} /> : null} Allow Once</Button>
-              <Button secondary onClick={runSim}>Re-test</Button>
-              <Button secondary onClick={handleRequireApproval}>Send to Approval</Button>
+            ) : null}
+
+            {/* Action buttons — always visible */}
+            <div className="decision-actions" style={{ marginTop: '1rem' }}>
+              <Button onClick={handleAllowOnce} disabled={!hasRun || actionLoading === 'allow'}>
+                {actionLoading === 'allow' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Allow Once
+              </Button>
+              <Button secondary onClick={runSim} disabled={loading}>
+                {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Re-test
+              </Button>
+              <Button secondary onClick={handleSendToApproval} disabled={actionLoading === 'approval'}>
+                {actionLoading === 'approval' ? <Loader2 size={14} className="animate-spin" /> : null} Send to Approval
+              </Button>
             </div>
           </div>
         </Panel>

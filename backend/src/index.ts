@@ -2,8 +2,9 @@ import "dotenv/config";
 import { createApp } from "./app";
 import { loadConfig } from "./config";
 import { getDb } from "./auditLogger";
-import { sweepTimeouts } from "./approvalGate";
 import { logger } from "./logger";
+import { startTimeoutSweep } from "./tasks/timeoutSweep";
+import { setupSocketIO, setGlobalIO } from "./realtime/socketServer";
 
 const CTX = "Bootstrap";
 
@@ -15,21 +16,24 @@ async function main(): Promise<void> {
   // 2. Initialise database (runs migrations)
   await getDb();
 
-  // 3. Start approval-timeout sweep every 60 s
-  setInterval(async () => {
-    const swept = await sweepTimeouts();
-    if (swept > 0) {
-      logger.info(CTX, `Swept ${swept} timed-out approval requests`);
-    }
-  }, 60_000);
-
-  // 4. Start HTTP server
+  // 3. Create Express app
   const app = createApp();
+
+  // 4. Setup Socket.io for real-time events
+  const { httpServer, io } = setupSocketIO(app);
+  setGlobalIO(io);
+  logger.info(CTX, "Socket.io server initialized");
+
+  // 5. Start background timeout sweep task with distributed locking
+  startTimeoutSweep();
+
+  // 6. Start HTTP/WebSocket server
   const port = parseInt(process.env.PORT ?? "3000", 10);
   const host = process.env.HOST ?? "localhost";
 
-  app.listen(port, host, () => {
+  httpServer.listen(port, host, () => {
     logger.info(CTX, `AgentShield listening on http://${host}:${port}`);
+    logger.info(CTX, `WebSocket endpoint: ws://${host}:${port}`);
     logger.info(CTX, `Approval mode : ${process.env.APPROVAL_MODE ?? "auto"}`);
     logger.info(CTX, `Risk thresholds — block: ${config.risk.block_threshold}, review: ${config.risk.review_threshold}`);
     logger.info(CTX, "────────────────────────────────────────────────");
@@ -42,6 +46,8 @@ async function main(): Promise<void> {
     logger.info(CTX, "  GET  /config                   view active config");
     logger.info(CTX, "  POST /config/reload            reload config from disk");
     logger.info(CTX, "  GET  /health                   health check");
+    logger.info(CTX, "────────────────────────────────────────────────");
+    logger.info(CTX, "  WS   /socket.io                real-time events (approvals, audit)");
     logger.info(CTX, "────────────────────────────────────────────────");
   });
 }

@@ -1,0 +1,52 @@
+=== VERIFICATION SUMMARY ===
+
+[✓] Bug 1: Secrets patterns with flags field
+
+      flags: "i"
+      flags: "i"
+      flags: "i"
+      flags: "i"
+
+
+[✓] Bug 5: Enhanced blocked patterns
+
+  - name: "Recursive delete variants"
+  - name: "Base64 decode to shell"
+    regex: "(base64|xxd|od).+\\|.*(bash|sh|zsh|powershell)"
+  - name: "Data exfiltration via pipe"
+
+
+[✓] Bug 7-8: Dockerfile and Compose fixes
+
+RUN npm ci
+RUN npm ci --only=production && \
+
+
+[✓] Bug 9a: Environment variable fix
+
+      LLM_API_URL: http://llm-api:8000
+
+
+[✓] Bug 9b: Nginx routing
+
+    location /inspect {
+    location /approvals {
+
+
+[✓] Bug 9c: Nginx timeout and WebSocket
+
+    proxy_read_timeout 15s;  # Bug #9c fix: Increased from 30s to 15s for LLM timeout (8s + buffer)
+        proxy_set_header Upgrade \;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Upgrade \;
+        proxy_set_header Connection "upgrade";
+
+
+[✓] Bug 9d: Ollama port removed
+
+      - "11434:11434"
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      - OLLAMA_BASE_URL=http://ollama:11434
+
+
+=== ALL FIXES APPLIED ===

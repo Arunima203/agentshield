@@ -1,88 +1,147 @@
 import { Router, Request, Response } from "express";
+import { asyncHandler } from "../middleware/asyncHandler";
+import { ErrorFactory } from "../errors/ErrorFactory";
+import {
+  createTokenPair,
+  verifyRefreshToken,
+  refreshAccessToken,
+} from "../tokenManager";
 
 const router = Router();
 
 // Demo users — matches Deepak's frontend demo credentials
-const DEMO_USERS: Record<string, { password: string; role: string; name: string }> = {
-  admin: { password: "AgentShield29241", role: "admin", name: "Admin User" },
-  operator: { password: "security-ops", role: "operator", name: "Security Operator" },
+const DEMO_USERS: Record<string, { password: string; role: "admin" | "approver" | "auditor" | "agent"; name: string; email: string }> = {
+  admin: { password: "AgentShield29241", role: "admin", name: "Admin User", email: "admin@agentshield.local" },
+  operator: { password: "security-ops", role: "approver", name: "Security Operator", email: "operator@agentshield.local" },
 };
-
-// Simple token — just base64 encoded username:role (no real JWT needed for demo)
-function makeToken(username: string, role: string): string {
-  const payload = Buffer.from(JSON.stringify({
-    sub: username, role, iat: Date.now(), exp: Date.now() + 24 * 60 * 60 * 1000
-  })).toString("base64");
-  return `demo.${payload}.signature`;
-}
 
 /**
  * POST /auth/login
+ * Authenticate user and return JWT token pair
  */
-router.post("/login", (req: Request, res: Response) => {
-  const { username, email, password } = req.body as {
-    username?: string; email?: string; password?: string;
-  };
+router.post(
+  "/login",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { username, email, password } = req.body as {
+      username?: string;
+      email?: string;
+      password?: string;
+    };
 
-  const user = username ?? email ?? "";
-  const key = user.toLowerCase().split("@")[0]; // handle email format too
+    if (!password) {
+      throw ErrorFactory.invalidInput("password is required");
+    }
 
-  const found = DEMO_USERS[key];
+    const userKey = (username ?? email ?? "").toLowerCase().split("@")[0]; // handle email format too
+    const found = DEMO_USERS[userKey];
 
-  if (!found || found.password !== password) {
-    res.status(401).json({ error: "Invalid credentials" });
-    return;
-  }
+    if (!found || found.password !== password) {
+      throw ErrorFactory.unauthorized("Invalid credentials");
+    }
 
-  const token = makeToken(key, found.role);
-  res.json({
-    access_token: token,
-    accessToken: token,
-    refresh_token: token,
-    refreshToken: token,
-    token_type: "Bearer",
-    user: { id: key, username: key, email: `${key}@agentshield.local`, role: found.role, name: found.name },
-  });
-});
+    // Create JWT token pair
+    const tokens = createTokenPair({
+      userId: userKey,
+      email: found.email,
+      role: found.role,
+    });
+
+    res.json({
+      access_token: tokens.accessToken,
+      accessToken: tokens.accessToken,
+      refresh_token: tokens.refreshToken,
+      refreshToken: tokens.refreshToken,
+      token_type: "Bearer",
+      expires_in: 900, // 15 minutes in seconds
+      user: {
+        id: userKey,
+        username: userKey,
+        email: found.email,
+        role: found.role,
+        name: found.name,
+      },
+    });
+  })
+);
 
 /**
  * POST /auth/refresh
+ * Refresh an expired access token using a valid refresh token
  */
-router.post("/refresh", (req: Request, res: Response) => {
-  const { refresh_token, refreshToken } = req.body as { refresh_token?: string; refreshToken?: string };
-  const token = refresh_token ?? refreshToken;
-  if (!token) {
-    res.status(401).json({ error: "No refresh token" });
-    return;
-  }
-  res.json({ access_token: token, accessToken: token, token_type: "Bearer" });
-});
+router.post(
+  "/refresh",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { refresh_token, refreshToken } = req.body as {
+      refresh_token?: string;
+      refreshToken?: string;
+    };
+
+    const token = refresh_token ?? refreshToken;
+    if (!token) {
+      throw ErrorFactory.invalidInput("refresh_token is required");
+    }
+
+    // Verify refresh token is valid
+    const payload = verifyRefreshToken(token);
+    if (!payload) {
+      throw ErrorFactory.unauthorized("Invalid or expired refresh token");
+    }
+
+    // Issue new access token
+    const newAccessToken = refreshAccessToken(token);
+    if (!newAccessToken) {
+      throw ErrorFactory.internal("Failed to refresh token");
+    }
+
+    res.json({
+      access_token: newAccessToken,
+      accessToken: newAccessToken,
+      token_type: "Bearer",
+      expires_in: 900, // 15 minutes in seconds
+    });
+  })
+);
 
 /**
  * GET /auth/verify
+ * Verify current access token validity
  */
-router.get("/verify", (req: Request, res: Response) => {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith("Bearer ")) {
-    res.status(401).json({ error: "No token" });
-    return;
-  }
-  const token = auth.slice(7);
-  try {
-    const parts = token.split(".");
-    if (parts.length < 2) throw new Error("bad token");
-    const payload = JSON.parse(Buffer.from(parts[1], "base64").toString());
-    res.json({ valid: true, user: { id: payload.sub, username: payload.sub, role: payload.role } });
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
-  }
-});
+router.get(
+  "/verify",
+  asyncHandler((req: Request, res: Response) => {
+    const auth = req.headers.authorization;
+    if (!auth?.startsWith("Bearer ")) {
+      throw ErrorFactory.unauthorized("No token provided");
+    }
+
+    const token = auth.slice(7);
+    const payload = verifyRefreshToken(token) || verifyRefreshToken(token);
+
+    if (!payload) {
+      throw ErrorFactory.unauthorized("Invalid or expired token");
+    }
+
+    res.json({
+      valid: true,
+      user: {
+        id: payload.userId,
+        username: payload.userId,
+        email: payload.email,
+        role: payload.role,
+      },
+    });
+  })
+);
 
 /**
  * POST /auth/logout
+ * Logout user (in stateless JWT, this is mainly for client-side cleanup)
  */
-router.post("/logout", (_req: Request, res: Response) => {
-  res.json({ message: "Logged out successfully" });
-});
+router.post(
+  "/logout",
+  asyncHandler((_req: Request, res: Response) => {
+    res.json({ message: "Logged out successfully" });
+  })
+);
 
 export default router;

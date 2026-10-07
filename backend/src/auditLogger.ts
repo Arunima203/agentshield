@@ -10,6 +10,8 @@ import path from "path";
 import fs from "fs";
 import { logger } from "./logger";
 import { getConfig } from "./config";
+import { eventBus } from "./realtime/eventBus";
+import { emitAuditEntry } from "./realtime/socketServer";
 import type { AuditEntry } from "./types";
 
 const CTX = "AuditLogger";
@@ -107,9 +109,73 @@ function migrate(db: Database): void {
 
 // ─── Write ────────────────────────────────────────────────────────────────────
 
+/**
+ * Generate idempotent key for deduplication
+ * Key format: `${toolCallId}:${approvalStatus}:${timestampBucket}`
+ * This ensures same operation at same time doesn't create duplicates
+ */
+function generateDedupeKey(toolCallId: string, approvalStatus: string): string {
+  const now = new Date();
+  const timestampBucket = Math.floor(now.getTime() / 60000); // 1 minute buckets
+  return `${toolCallId}:${approvalStatus}:${timestampBucket}`;
+}
+
+/**
+ * Check if this audit entry already exists (deduplication)
+ */
+async function isDuplicate(
+  toolCallId: string,
+  approvalStatus: string
+): Promise<boolean> {
+  const db = await getDb();
+  const dedupeKey = generateDedupeKey(toolCallId, approvalStatus);
+  
+  // Store dedupe keys in memory with TTL for efficiency
+  const dedupeCache = (global as any).__auditDedupeCache || {};
+  (global as any).__auditDedupeCache = dedupeCache;
+
+  if (dedupeKey in dedupeCache) {
+    return true;
+  }
+
+  // Check database for recent duplicate (within last minute)
+  const cutoff = new Date(Date.now() - 60000).toISOString();
+  const stmt = db.prepare(
+    `SELECT COUNT(*) as c FROM audit_log 
+     WHERE tool_call_id = ? AND approval_status = ? AND created_at >= ?`
+  );
+  stmt.bind([toolCallId, approvalStatus, cutoff]);
+  stmt.step();
+  const count = (stmt.getAsObject() as { c: number }).c;
+  stmt.free();
+
+  if (count > 0) {
+    return true;
+  }
+
+  // Mark this key as seen
+  dedupeCache[dedupeKey] = true;
+  
+  // Clean up old keys periodically (every 1000 writes)
+  if (Math.random() < 0.001) {
+    for (const key of Object.keys(dedupeCache)) {
+      delete dedupeCache[key];
+    }
+  }
+
+  return false;
+}
+
 export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
   const config = getConfig();
   if (!config.audit.enabled) return;
+
+  // Check for duplicates before writing
+  const isDuped = await isDuplicate(entry.toolCallId, entry.approvalStatus);
+  if (isDuped) {
+    logger.debug(CTX, `Skipped duplicate audit entry for tool_call_id=${entry.toolCallId}`);
+    return;
+  }
 
   const db = await getDb();
   db.run(
@@ -138,6 +204,14 @@ export async function writeAuditEntry(entry: AuditEntry): Promise<void> {
   );
   flush(db);
   logger.debug(CTX, `Audit entry written for tool_call_id=${entry.toolCallId}`);
+
+  // Emit real-time event
+  try {
+    await eventBus.publishAuditEntry(entry);
+    emitAuditEntry(entry);
+  } catch (error) {
+    logger.warn(CTX, `Failed to emit audit:new event: ${error}`);
+  }
 }
 
 // ─── Update approval status ───────────────────────────────────────────────────

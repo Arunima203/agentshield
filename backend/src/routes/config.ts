@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { getConfig, reloadConfig } from "../config";
+import { asyncHandler } from "../middleware/asyncHandler";
 
 const router = Router();
 
@@ -7,18 +8,24 @@ const router = Router();
  * GET /config
  * Return the currently active configuration.
  */
-router.get("/", (_req: Request, res: Response) => {
-  const config = getConfig();
-  res.json(config);
-});
+router.get(
+  "/",
+  asyncHandler((_req: Request, res: Response) => {
+    const config = getConfig();
+    res.json(config);
+  })
+);
 
 /**
  * POST /config/reload
  * Force-reload the config file from disk.
  */
-router.post("/reload", (_req: Request, res: Response) => {
-  const config = reloadConfig();
-  res.json({ message: "Config reloaded", config });
-});
+router.post(
+  "/reload",
+  asyncHandler((_req: Request, res: Response) => {
+    const config = reloadConfig();
+    res.json({ message: "Config reloaded", config });
+  })
+);
 
 export default router;

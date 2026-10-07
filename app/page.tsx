@@ -171,6 +171,8 @@ function Overview() {
   const [events, setEvents] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const { useRealtimeAudit } = require('../hooks/useRealtimeEvents')
+  const realtimeEvents = useRealtimeAudit()
 
   const load = useCallback(async () => {
     if (!accessToken) {
@@ -180,12 +182,8 @@ function Overview() {
 
     try {
       setError(null)
-      const [s, e] = await Promise.all([
-        getAuditStats(accessToken),
-        getAuditLog(accessToken, { limit: 6 }),
-      ])
-      setStats(s)
-      setEvents(e.entries)
+      const stats = await getAuditStats(accessToken)
+      setStats(stats)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Backend unreachable')
     } finally {
@@ -193,11 +191,19 @@ function Overview() {
     }
   }, [accessToken])
 
+  // Load stats on mount and poll periodically
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
-    return () => window.clearInterval(intervalId)
+    const interval = window.setInterval(() => { void load() }, 30000) // Poll every 30s instead of 5s
+    return () => window.clearInterval(interval)
   }, [load])
+
+  // Use real-time events for live audit feed
+  useEffect(() => {
+    if (realtimeEvents.events.length > 0) {
+      setEvents(realtimeEvents.events.slice(0, 6))
+    }
+  }, [realtimeEvents.events])
 
   const blocked   = stats?.byDecision.find(d => d.decision === 'block')?.count ?? 0
   const allowed   = stats?.byDecision.find(d => d.decision === 'allow')?.count ?? 0
@@ -210,11 +216,11 @@ function Overview() {
         <div>
           <span className="eyebrow">SECURITY CONTROL CENTER / OVERVIEW</span>
           <h1>AgentShield Security</h1>
-          <p>{error ? <span style={{ color: 'salmon' }}>⚠ {error} — start the backend with <code>npm start</code></span> : 'Your agents are protected.'}</p>
+          <p>{error ? <span style={{ color: 'salmon' }}>⚠ {error} — start the backend with <code>npm start</code></span> : realtimeEvents.connected ? 'Your agents are protected. Live updates active ✓' : 'Your agents are protected.'}</p>
         </div>
         <div className="protected">
-          <span><i /> {error ? 'BACKEND OFFLINE' : 'PROTECTED'}</span>
-          <small>Last scan {new Date().toLocaleTimeString()}</small>
+          <span><i /> {error ? 'BACKEND OFFLINE' : realtimeEvents.connected ? 'REAL-TIME ACTIVE' : 'PROTECTED'}</span>
+          <small>Last update {new Date().toLocaleTimeString()}</small>
         </div>
       </section>
 
@@ -238,7 +244,7 @@ function Overview() {
 
       <div className="dashboard-grid">
         {/* Live agent execution panel */}
-        <Panel title="Live Agent Events" eyebrow="REAL-TIME AUDIT FEED">
+        <Panel title="Live Agent Events" eyebrow={realtimeEvents.connected ? "REAL-TIME AUDIT FEED" : "AUDIT FEED (5s POLL)"}>
           {loading ? <Spinner /> : events.length === 0 ? (
             <p style={{ padding: '1rem', opacity: 0.5 }}>No events yet — submit a tool call to /inspect</p>
           ) : (
@@ -254,7 +260,7 @@ function Overview() {
             </div>
           )}
           <div className="panel-foot">
-            <span><CircleDot size={13} /> Live from audit log</span>
+            <span><CircleDot size={13} /> {realtimeEvents.connected ? "Live via WebSocket" : "Live from audit log (polling)"}</span>
             <button onClick={load}><RefreshCw size={13} /> Refresh</button>
           </div>
         </Panel>
@@ -299,6 +305,8 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
   const [requests, setRequests] = useState<ApprovalRequest[]>([])
   const [loading, setLoading] = useState(true)
   const [acting, setActing] = useState<string | null>(null)
+  const { useRealtimeApprovals } = require('../hooks/useRealtimeEvents')
+  const realtimeApprovals = useRealtimeApprovals()
 
   const load = useCallback(async () => {
     if (!accessToken) {
@@ -307,20 +315,36 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
     }
 
     try {
-      const data = await getApprovals(accessToken, 'pending', compact ? 2 : 20)
+      const data = await getApprovals(accessToken, 'pending', 20)
       setRequests(data.requests)
     } catch {
       // backend offline — fail silently in compact mode
     } finally {
       setLoading(false)
     }
-  }, [compact, accessToken])
+  }, [accessToken])
 
+  // Initial load
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
+  }, [load])
+
+  // Poll for initial data less frequently now that we have real-time updates
+  useEffect(() => {
+    const intervalId = window.setInterval(() => { void load() }, 30000)
     return () => window.clearInterval(intervalId)
   }, [load])
+
+  // Update with real-time changes
+  useEffect(() => {
+    if (realtimeApprovals.events.length > 0) {
+      // Filter for pending approvals only and take latest
+      const pending = realtimeApprovals.events.filter((e: any) => e.status === 'pending').slice(0, compact ? 2 : 20)
+      if (pending.length > 0) {
+        setRequests(pending)
+      }
+    }
+  }, [realtimeApprovals.events, compact])
 
   async function handleApprove(id: string) {
     if (!accessToken) return
@@ -338,7 +362,7 @@ function ApprovalsPanel({ compact = false }: { compact?: boolean }) {
     finally { setActing(null) }
   }
 
-  if (loading) return <Spinner />
+  if (loading && requests.length === 0) return <Spinner />
   if (requests.length === 0) return <p style={{ padding: '1rem', opacity: 0.5 }}>No pending approvals 🎉</p>
 
   return (
@@ -397,6 +421,8 @@ function MonitorPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('All')
   const [error, setError] = useState<string | null>(null)
+  const { useRealtimeAudit } = require('../hooks/useRealtimeEvents')
+  const realtimeEvents = useRealtimeAudit()
 
   const load = useCallback(async () => {
     if (!accessToken) {
@@ -421,11 +447,23 @@ function MonitorPage() {
     }
   }, [filter, accessToken])
 
+  // Initial load
   useEffect(() => {
     void load()
-    const intervalId = window.setInterval(() => { void load() }, 5000)
+  }, [load])
+
+  // Poll less frequently, rely on real-time for updates
+  useEffect(() => {
+    const intervalId = window.setInterval(() => { void load() }, 30000)
     return () => window.clearInterval(intervalId)
   }, [load])
+
+  // Use real-time events for live updates
+  useEffect(() => {
+    if (realtimeEvents.connected && realtimeEvents.events.length > 0) {
+      setEntries(realtimeEvents.events.slice(0, 50))
+    }
+  }, [realtimeEvents.events, realtimeEvents.connected])
 
   const filtered = filter === 'Critical'
     ? entries.filter(e => e.riskLevel === 'critical')
@@ -434,12 +472,12 @@ function MonitorPage() {
   return (
     <main className="workspace">
       <PageHead
-        eyebrow="LIVE MONITOR / 5S POLL"
+        eyebrow={realtimeEvents.connected ? "LIVE MONITOR / REAL-TIME" : "LIVE MONITOR / 30S POLL"}
         title="Live Security Monitor"
         description="Every agent action, analyzed and decided at runtime."
         action={
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <Badge tone={error ? 'danger' : 'success'}>{error ? '● BACKEND OFFLINE' : '● SYSTEM OPERATIONAL'}</Badge>
+            <Badge tone={error ? 'danger' : realtimeEvents.connected ? 'success' : 'success'}>{error ? '● BACKEND OFFLINE' : realtimeEvents.connected ? '● REAL-TIME ACTIVE' : '● SYSTEM OPERATIONAL'}</Badge>
             <button className="control-button secondary" onClick={load}><RefreshCw size={14} /></button>
           </div>
         }
@@ -452,7 +490,7 @@ function MonitorPage() {
       </div>
 
       <Panel title="Security events" eyebrow={`${filtered.length} EVENTS`}>
-        {loading ? <Spinner /> : error ? (
+        {loading && entries.length === 0 ? <Spinner /> : error ? (
           <p style={{ padding: '1rem', color: 'salmon' }}>⚠ {error} — make sure the backend is running on port 3000</p>
         ) : filtered.length === 0 ? (
           <p style={{ padding: '1rem', opacity: 0.5 }}>No events found</p>

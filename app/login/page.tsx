@@ -108,16 +108,22 @@ export default function LoginPage() {
           <div className="mt-6 pt-6 border-t border-slate-700">
             <p className="text-xs text-slate-400 mb-3 font-semibold">DEMO CREDENTIALS</p>
             <div className="space-y-2 text-xs">
-              <div className="bg-slate-900/50 p-2 rounded">
-                <p className="text-slate-300"><span className="font-mono text-blue-400">admin</span> / <span className="font-mono text-blue-400">AgentShield2024!</span></p>
+              <div className="bg-slate-900/50 p-2 rounded cursor-pointer hover:bg-slate-700/50 transition-colors" onClick={() => { setUsername('admin'); setPassword('AgentShield29241') }}>
+                <p className="text-slate-300"><span className="font-mono text-blue-400">admin</span> / <span className="font-mono text-blue-400">AgentShield29241</span> <span className="text-slate-500 text-xs ml-1">(click to fill)</span></p>
               </div>
-              <div className="bg-slate-900/50 p-2 rounded">
-                <p className="text-slate-300"><span className="font-mono text-blue-400">operator</span> / <span className="font-mono text-blue-400">security-ops</span></p>
+              <div className="bg-slate-900/50 p-2 rounded cursor-pointer hover:bg-slate-700/50 transition-colors" onClick={() => { setUsername('operator'); setPassword('security-ops') }}>
+                <p className="text-slate-300"><span className="font-mono text-blue-400">operator</span> / <span className="font-mono text-blue-400">security-ops</span> <span className="text-slate-500 text-xs ml-1">(click to fill)</span></p>
               </div>
             </div>
             <p className="text-slate-500 text-xs mt-3">
               ⚠️ These are demo credentials. In production, use a proper authentication backend.
             </p>
+            <div className="mt-4 text-center">
+              <p className="text-slate-400 text-sm">
+                New user?{' '}
+                <a href="/register" className="text-blue-400 hover:text-blue-300 font-medium">Create an account →</a>
+              </p>
+            </div>
           </div>
         </div>
 

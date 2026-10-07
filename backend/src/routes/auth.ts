@@ -1,20 +1,67 @@
 import { Router, Request, Response } from "express";
+import { logger } from "../logger";
 
 const router = Router();
+const CTX = "Auth";
 
-// Demo users — matches Deepak's frontend demo credentials
-const DEMO_USERS: Record<string, { password: string; role: string; name: string }> = {
-  admin: { password: "AgentShield29241", role: "admin", name: "Admin User" },
-  operator: { password: "security-ops", role: "operator", name: "Security Operator" },
+// In-memory user store (persists until backend restarts)
+const REGISTERED_USERS: Record<string, { password: string; role: string; name: string }> = {
+  admin:    { password: "AgentShield29241", role: "admin",    name: "Admin User" },
+  operator: { password: "security-ops",     role: "operator", name: "Security Operator" },
 };
 
 // Simple token — just base64 encoded username:role (no real JWT needed for demo)
 function makeToken(username: string, role: string): string {
   const payload = Buffer.from(JSON.stringify({
-    sub: username, role, iat: Date.now(), exp: Date.now() + 24 * 60 * 60 * 1000
+    sub: username, role, iat: Date.now(), exp: Date.now() + 30 * 24 * 60 * 60 * 1000  // 30 days
   })).toString("base64");
   return `demo.${payload}.signature`;
 }
+
+/**
+ * POST /auth/register
+ */
+router.post("/register", (req: Request, res: Response) => {
+  const { username, password, role = "operator" } = req.body as {
+    username?: string; password?: string; role?: string;
+  };
+
+  if (!username || !password) {
+    res.status(400).json({ error: "Username and password are required" });
+    return;
+  }
+  if (password.length < 6) {
+    res.status(400).json({ error: "Password must be at least 6 characters" });
+    return;
+  }
+
+  const key = username.toLowerCase().trim();
+
+  if (REGISTERED_USERS[key]) {
+    res.status(409).json({ error: "Username already taken" });
+    return;
+  }
+
+  const allowedRoles = ["admin", "operator", "auditor", "agent"];
+  const userRole = allowedRoles.includes(role) ? role : "operator";
+
+  REGISTERED_USERS[key] = {
+    password,
+    role: userRole,
+    name: username,
+  };
+
+  logger.info(CTX, `New user registered: ${key} (${userRole})`);
+
+  const token = makeToken(key, userRole);
+  res.status(201).json({
+    message: "Account created successfully",
+    access_token: token,
+    accessToken: token,
+    token_type: "Bearer",
+    user: { id: key, username: key, email: `${key}@agentshield.local`, role: userRole, name: username },
+  });
+});
 
 /**
  * POST /auth/login
@@ -27,7 +74,7 @@ router.post("/login", (req: Request, res: Response) => {
   const user = username ?? email ?? "";
   const key = user.toLowerCase().split("@")[0]; // handle email format too
 
-  const found = DEMO_USERS[key];
+  const found = REGISTERED_USERS[key];
 
   if (!found || found.password !== password) {
     res.status(401).json({ error: "Invalid credentials" });

@@ -46,11 +46,11 @@ export async function createApprovalRequest(
   );
   // flush is done by auditLogger on the shared db instance
 
-  const approval = {
+  const approval: ApprovalRequest = {
     id,
     toolCall,
     inspection,
-    status: "pending",
+    status: "pending" as ApprovalStatus,
     createdAt: now,
     timeoutMs,
   };

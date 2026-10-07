@@ -200,7 +200,7 @@ export async function inspect(req: InspectRequest): Promise<InspectResponse> {
       decision: "allow",
       riskScore: fallbackRiskScore,
       riskLevel: "medium",
-      riskFindings: [{ name: "Inspection Error", severity: "medium", description: "Fallback decision due to inspection error" }],
+      riskFindings: [{ severity: "medium" as const, rule: "inspection_error", reason: "Fallback decision due to inspection error" }],
       secretsDetected: false,
       message: "Tool call approved with fallback scoring (inspection error occurred)",
     };

@@ -38,7 +38,7 @@ export function setupSocketIO(app: Application): { httpServer: HTTPServer; io: S
   /**
    * JWT authentication middleware for Socket.io
    */
-  io.use((socket, next) => {
+  io.use((socket: Socket, next: (err?: Error) => void) => {
     try {
       const token = socket.handshake.auth.token;
       
@@ -123,7 +123,7 @@ export function setupSocketIO(app: Application): { httpServer: HTTPServer; io: S
     /**
      * Error handler
      */
-    socket.on('error', (error) => {
+    socket.on('error', (error: any) => {
       logger.error(CTX, `Socket error for ${socket.id}: ${error}`);
     });
   });

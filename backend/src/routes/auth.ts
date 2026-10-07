@@ -3,6 +3,7 @@ import { asyncHandler } from "../middleware/asyncHandler";
 import { ErrorFactory } from "../errors/ErrorFactory";
 import {
   createTokenPair,
+  verifyAccessToken,
   verifyRefreshToken,
   refreshAccessToken,
 } from "../tokenManager";
@@ -108,14 +109,14 @@ router.post(
  */
 router.get(
   "/verify",
-  asyncHandler((req: Request, res: Response) => {
+  asyncHandler(async (req: Request, res: Response) => {
     const auth = req.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       throw ErrorFactory.unauthorized("No token provided");
     }
 
     const token = auth.slice(7);
-    const payload = verifyRefreshToken(token) || verifyRefreshToken(token);
+    const payload = verifyAccessToken(token) || verifyAccessToken(token);
 
     if (!payload) {
       throw ErrorFactory.unauthorized("Invalid or expired token");
@@ -139,7 +140,7 @@ router.get(
  */
 router.post(
   "/logout",
-  asyncHandler((_req: Request, res: Response) => {
+  asyncHandler(async (_req: Request, res: Response) => {
     res.json({ message: "Logged out successfully" });
   })
 );

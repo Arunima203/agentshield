@@ -10,7 +10,7 @@ const router = Router();
  */
 router.get(
   "/",
-  asyncHandler((_req: Request, res: Response) => {
+  asyncHandler(async (_req: Request, res: Response) => {
     const config = getConfig();
     res.json(config);
   })
@@ -22,7 +22,7 @@ router.get(
  */
 router.post(
   "/reload",
-  asyncHandler((_req: Request, res: Response) => {
+  asyncHandler(async (_req: Request, res: Response) => {
     const config = reloadConfig();
     res.json({ message: "Config reloaded", config });
   })
